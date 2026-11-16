@@ -1,0 +1,19 @@
+# Runs testslot's own tests: every case in test.sh, offline. Nothing to install
+# beyond what the runner image has (python3, flock).
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash test.sh ./testslot

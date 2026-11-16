@@ -1,0 +1,24 @@
+name: Idea or feature request
+description: Something testslot should do differently.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome, especially a way sessions share one machine's test capacity that it does not handle today.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What should it do?
+      description: The gap you hit, or what you wish `testslot status` or a run did.
+    validations:
+      required: true
+  - type: input
+    id: example
+    attributes:
+      label: An example
+      description: The command line, or a public repo's test setup, that shows the case, if you have one.
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+      description: What goes wrong for a user without it.

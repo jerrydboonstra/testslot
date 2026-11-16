@@ -1,0 +1,40 @@
+name: Bug report
+description: testslot started a run it should not have, held one it should have started, crashed, or reported something wrong.
+body:
+  - type: input
+    id: version
+    attributes:
+      label: testslot version
+      description: The commit you ran (`git rev-parse --short HEAD` in your checkout), or the release tag.
+      placeholder: "abc1234"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: The command that went wrong
+      description: For example `testslot run --cpus 2 -- make test`, or `testslot status`.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: The error, or the lines of `testslot status` that are wrong. Remove anything private, such as host names and paths.
+      render: text
