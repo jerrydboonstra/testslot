@@ -1933,14 +1933,19 @@ if [ -f "$d/README.md" ]; then
   [ "$got" = "$want" ] && ok "98a: LICENSE is the MIT text" || fail "98a: LICENSE sha256 is '${got:-missing}', not the MIT text"
   grep -qx '## License' "$d/README.md" && grep -qF '[LICENSE](./LICENSE)' "$d/README.md" \
     && ok "98b: README has a License section linking ./LICENSE" || fail "98b: README has no License section linking ./LICENSE"
-  # 98c: the front page reads in order for a stranger: six headings, in this order.
+  # 98c: the front page reads in order for a stranger: eight headings, in this order.
   got=$(grep -E '^#{2} ' "$d/README.md" | sed 's/^## //' | paste -sd, -)
-  want="What it is,What you need,Install,Usage,Specification,License"
+  want="Quick start,Usage,Sharing across accounts,How it works,Requirements,Running the tests,Specification,License"
   [ "$got" = "$want" ] && ok "98c: README headings are $want" || fail "98c: README headings are '$got', want '$want'"
-  # 98e: the Install section puts the install folder on PATH: it holds an export of $HOME/.local/bin ahead of PATH.
-  if awk '/^## Install/{f=1;next} /^## /{f=0} f' "$d/README.md" | grep -qE '^export PATH="\$HOME/\.local/bin:\$PATH"'; then
-    ok "98e: README's Install section puts ~/.local/bin on PATH"
-  else fail "98e: README's Install section has no export of \$HOME/.local/bin onto PATH"; fi
+  # 98e: the Quick start runs `make install` and quotes the line it prints, which puts .local/bin on PATH and sets TESTSLOT_DIR
+  # (the quoted lines are checked against the real output in 100j).
+  qs=$(awk '/^## Quick start/{f=1;next} /^## /{f=0} f' "$d/README.md")
+  if printf '%s\n' "$qs" | grep -qx 'make install' && printf '%s\n' "$qs" | grep -qE '^export PATH="[^"]*/\.local/bin:\$PATH" TESTSLOT_DIR="[^"]+"$'; then
+    ok "98e: README's Quick start runs make install and quotes the line it prints"
+  else fail "98e: README's Quick start has no 'make install' line, or no quoted export of .local/bin onto PATH with TESTSLOT_DIR"; fi
+  # 98g: CHANGELOG.md sits beside the README, and the README links it.
+  [ -s "$d/CHANGELOG.md" ] && grep -qF '[CHANGELOG.md](./CHANGELOG.md)' "$d/README.md" && grep -qF '[Changelog](./CHANGELOG.md)' "$d/README.md" \
+    && ok "98g: CHANGELOG.md exists and the README links it twice" || fail "98g: CHANGELOG.md is missing or empty, or the README does not link it at the top and in the License paragraph"
   # 98f: the README opens with the logo: a first-line <img> whose src is images/logo.png, with an alt text, and the file exists.
   first=$(head -1 "$d/README.md")
   if printf '%s' "$first" | grep -qE '^<img src="images/logo\.png" alt="[^"]+"' && [ -f "$d/images/logo.png" ]; then
@@ -1981,6 +1986,65 @@ fi
     pkill -g "$zp" 2>/dev/null   # only this run's group
     [ $c = 0 ] && ok "a stop after the command exited by itself leaves its code 0" || fail "a stop after the command exited by itself changed its code to $c"
   } || skip "99a: stop after exit"
+
+# 100. Install targets (testslot-install-targets): `make install` and `make install-shared`, only ever into a scratch
+# folder here (PREFIX, STATE and SHARED), never a real system folder. The Makefile sits beside the tool; an installed copy has none.
+d=$(dirname "$T")
+if [ -f "$d/Makefile" ] && command -v make >/dev/null; then
+  I=$O/inst; mkdir -p "$I"
+  mk() { make -s -C "$d" "$@"; }
+  mk install PREFIX="$I/prefix" STATE="$I/state" > "$I/out1" 2>&1; c=$?
+  [ $c = 0 ] && [ -x "$I/prefix/bin/testslot" ] && cmp -s "$d/testslot" "$I/prefix/bin/testslot" \
+    && ok "100a: make install puts an identical executable copy in PREFIX/bin" || fail "100a: make install (exit $c) did not put an identical executable copy in PREFIX/bin"
+  [ -d "$I/state/holders" ] && [ -d "$I/state/logs" ] \
+    && ok "100b: make install makes the state folder with holders/ and logs/" || fail "100b: make install did not make STATE/holders and STATE/logs"
+  want="export PATH=\"$I/prefix/bin:\$PATH\" TESTSLOT_DIR=\"$I/state\""
+  grep -qxF "$want" "$I/out1" \
+    && ok "100c: make install prints the exact export line" || fail "100c: make install printed no line '$want': $(head -c 300 "$I/out1" | paste -sd'|' -)"
+  mk install PREFIX="$I/prefix" STATE="$I/state" > "$I/out2" 2>&1; c=$?
+  [ $c = 0 ] && cmp -s "$I/out1" "$I/out2" \
+    && ok "100d: a second make install exits 0 and prints the same" || fail "100d: the second make install (exit $c) differs: $(head -c 300 "$I/out2" | paste -sd'|' -)"
+  out=$(TESTSLOT_DIR="$I/state" "$I/prefix/bin/testslot" run --cpus 1 -- echo ok 2>/dev/null)
+  [ "$out" = ok ] && ok "100e: the installed copy runs the check and prints ok" || fail "100e: the installed copy printed '$out', not ok"
+  S=$I/shared
+  mk install-shared SHARED="$S" > "$I/sh0.out" 2> "$I/sh0.err"; c=$?
+  [ $c != 0 ] && [ "$(wc -l < "$I/sh0.err" | tr -d ' ')" = 1 ] && grep -q "usage: .*GROUP=" "$I/sh0.err" && [ ! -e "$S" ] \
+    && ok "100f: install-shared without GROUP refuses with a one-line usage and changes nothing" \
+    || fail "100f: install-shared without GROUP (exit $c) gave '$(paste -sd'|' "$I/sh0.err" | head -c 200)' or made $S"
+  g=$(id -gn)
+  mk install-shared GROUP="$g" SHARED="$S" > "$I/sh1.out" 2>&1; c=$?
+  python3 - "$S" "$g" <<'PY' && shok=1 || shok=0
+import grp, os, sys
+s, g = sys.argv[1], sys.argv[2]
+for p in (s, s + "/holders", s + "/logs"):
+    st = os.stat(p)
+    assert grp.getgrgid(st.st_gid).gr_name == g, (p, "group")
+    assert st.st_mode & 0o2060 == 0o2060, (p, oct(st.st_mode))   # g+rws: group read, write, setgid
+PY
+  [ $c = 0 ] && [ $shok = 1 ] \
+    && ok "100g: install-shared GROUP= makes the shared folder with holders/ and logs/, in the group, g+rws" \
+    || fail "100g: install-shared GROUP=$g (exit $c, folder ok=$shok): $(head -c 300 "$I/sh1.out" | paste -sd'|' -)"
+  grep -qxF "export TESTSLOT_DIR=\"$S\"" "$I/sh1.out" \
+    && ok "100h: install-shared prints the TESTSLOT_DIR line for each account" || fail "100h: install-shared printed no TESTSLOT_DIR line for $S"
+  mk install-shared GROUP="$g" SHARED="$S" > "$I/sh2.out" 2>&1 && cmp -s "$I/sh1.out" "$I/sh2.out" \
+    && ok "100i: a second install-shared exits 0 and prints the same" || fail "100i: the second install-shared differs or failed"
+  # 100j and 100k: the README's quoted output is what the targets really print (paths and the group name swapped for the README's
+  # example user, folder and group). Only where the README sits beside the tool.
+  if [ -f "$d/README.md" ]; then
+    H=$I/alice; mkdir -p "$H"
+    real=$(HOME="$H" make -s -C "$d" install 2>&1 | sed "s#$H#/home/alice#g")
+    quoted=$(grep -E '^(Installed testslot in |Add this line to your shell profile \(and run|export PATH=.* TESTSLOT_DIR=)' "$d/README.md")
+    [ -n "$quoted" ] && [ "$real" = "$quoted" ] && ok "100j: the README quotes what make install really prints" \
+      || fail "100j: the README's quoted make install output differs from the real one: real '$(printf %s "$real" | paste -sd'|' -)' quoted '$(printf %s "$quoted" | paste -sd'|' -)'"
+    S2=$I/shared2
+    real=$(make -s -C "$d" install-shared GROUP="$g" SHARED="$S2" 2>&1 | sed "s#$S2#/var/lib/testslot#g; s#the group $g\.#the group testers.#")
+    quoted=$(grep -E '^(Made the shared state folder |Each account adds this line|export TESTSLOT_DIR="/var/lib/testslot"$)' "$d/README.md")
+    [ -n "$quoted" ] && [ "$real" = "$quoted" ] && ok "100k: the README quotes what make install-shared really prints" \
+      || fail "100k: the README's quoted make install-shared output differs from the real one: real '$(printf %s "$real" | paste -sd'|' -)' quoted '$(printf %s "$quoted" | paste -sd'|' -)'"
+  fi
+else
+  echo "skip 100 install targets (no Makefile beside the tool, or no make)"
+fi
 
 echo "$fails failed"
 exit $((fails > 0))
