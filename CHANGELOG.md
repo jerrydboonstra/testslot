@@ -1,8 +1,8 @@
 # Changelog
 
-What changed in each release, newest first. testslot has had no numbered release yet; the first one will be listed here when it is cut.
+What changed in each release, newest first.
 
-## Unreleased: the first public version
+## 1.0.0 (2026-11-16)
 
 ### The gate
 
