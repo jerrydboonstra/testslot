@@ -16,6 +16,7 @@ Accounts share one gate only when they use the same state folder: the default (`
 
 - Python 3.9 or newer and a Unix host (Linux or macOS). `testslot` is one file with no packages to install. The 3.9 minimum comes from a static check of the file with [vermin](https://github.com/netromdk/vermin), and `testslot run` and `testslot status` were run on Python 3.9.6. The full test suite (`bash test.sh ./testslot`) passed on macOS (Darwin 25.6.0) with Python 3.15.2 and on Ubuntu 26.04 (Linux 7.3.1) with Python 3.14.4; it has not been run on other systems or on Python 3.9.
 - A folder for the gate's state that every account using it can write to.
+- To run the repository's own tests on macOS: GNU `timeout`, which macOS does not have. `brew install coreutils` installs it as `gtimeout`, so link it into a folder on your `PATH` (the Install section below makes `~/.local/bin` and puts it there): `mkdir -p ~/.local/bin && ln -s "$(brew --prefix coreutils)/bin/gtimeout" ~/.local/bin/timeout`. Nothing else is needed: with only that link, the suite passed in a clean macOS shell (the system `/bin/bash` 3.2.57 and system Python 3.9.6) with no failures; `setsid` is not needed: macOS lacks it too, and of the two cases that use it, one skips itself and the other (a `setsid` daemon that must not keep the slot) passes without testing `setsid`. Linux already has `timeout`.
 
 ## Install
 
@@ -47,10 +48,10 @@ sudo chmod -R g+rws /var/lib/testslot
 export TESTSLOT_DIR=/var/lib/testslot      # in each account's shell profile
 ```
 
-In a CI job, set both in the job itself, then call `testslot`. To gate against other accounts on the host, point the job at the shared folder from the recipe above (the CI account must be in its group):
+A CI job usually runs as its own account, and `~/.local/bin` is per account, so `testslot` must be installed for that account. Either run the install lines above as the CI account (the file goes into that account's own `~/.local/bin`), or put one copy where every account's `PATH` reaches, for example `sudo install -m 755 testslot /usr/local/bin/testslot` (then the `PATH` line below is not needed). In the job itself, set the state folder and call `testslot`. To gate against other accounts on the host, point the job at the shared folder from the recipe above (the CI account must be in its group):
 
 ```sh
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"       # only when testslot is in the CI account's own ~/.local/bin
 export TESTSLOT_DIR=/var/lib/testslot
 testslot run --cpus 2 -- make -j2 test
 ```
@@ -64,7 +65,7 @@ command -v testslot                  # prints where the installed copy is
 testslot run --cpus 1 -- echo ok     # prints a "light run, 1 cpus" line, then: ok
 ```
 
-The repository's own tests are separate: `bash test.sh ./testslot`, run from the repository folder, tests the checkout's copy of `testslot`, not the installed one. On a shared host, run them through the gate (`testslot run --cpus 2 -- bash test.sh ./testslot`).
+The repository's own tests are separate (on macOS, link `timeout` first, as under "What you need"): `bash test.sh ./testslot`, run from the repository folder, tests the checkout's copy of `testslot`, not the installed one. On a shared host, run them through the gate (`testslot run --cpus 2 -- bash test.sh ./testslot`).
 
 ## Usage
 
@@ -89,13 +90,21 @@ Declare the cpus your command really uses (for `make`, its `-j`). The default is
 
 ### Two runs competing
 
-With a cpu cap of 3 (`echo 3 > "$TESTSLOT_DIR/cap"`), a run that holds 2 cpus makes a run that needs 3 wait:
+Try it on a scratch gate, so your real gate's settings stay as they are. Set both the cpu cap and the load cap there: the load cap defaults to the cpu cap, so on a host whose load is already near 3 a cap of 3 alone would close the gate.
 
 ```sh
-testslot run --cpus 2 -- sleep 25 &    # holds 2 of the 3 cpus
-testslot run --cpus 3 -- sleep 1 &     # needs all 3, so it waits
+export TESTSLOT_DIR=$(mktemp -d)           # a scratch gate, only for this shell
+mkdir "$TESTSLOT_DIR/holders" "$TESTSLOT_DIR/logs"
+echo 3 > "$TESTSLOT_DIR/cap"               # a cpu cap of 3
+echo 100 > "$TESTSLOT_DIR/load-cap"        # and a load cap that stays out of the way
+testslot run --cpus 2 -- sleep 25 &        # holds 2 of the 3 cpus
+sleep 1                                    # let it start first
+testslot run --cpus 3 -- sleep 1 &         # needs all 3, so it waits
+sleep 1
 testslot status
 ```
+
+When you are done, run `unset TESTSLOT_DIR` (or open a new shell) to go back to your own gate.
 
 `status` prints (host name, user, folders and log lines trimmed):
 
