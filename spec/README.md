@@ -1,6 +1,6 @@
 # Testslot model
 
-A TLA+ model of the testslot scheduler, `../testslot` (the script). It is a trial of the method on one small, concurrent piece of code: model it, let TLC explore every interleaving of a few runs, and turn each counterexample into a test. This directory holds the model only. "Results of the check" records the script fix and the model's TLC results.
+A TLA+ model of the testslot scheduler, the scheduler in `../lib/testslot/` (the model was built from the single script `testslot` at commit 5e24784, before the code was split into that package). It is a trial of the method on one small, concurrent piece of code: model it, let TLC explore every interleaving of a few runs, and turn each counterexample into a test. This directory holds the model only. "Results of the check" records the script fix and the model's TLC results.
 
 ## Files
 

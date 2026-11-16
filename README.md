@@ -16,7 +16,7 @@ cd testslot
 make install
 ```
 
-`make install` puts a copy of the `testslot` file in `~/.local/bin` (a copy, not a link into the checkout, so a running gate does not change when you switch branches) and makes a state folder for your account, `~/.testslot`, with its `holders/` and `logs/`. Then it prints the line to add to your shell profile (shown here for a user named alice):
+`make install` puts a copy of the code in `~/.local/lib` and a link to it in `~/.local/bin` (a copy, not a link into the checkout, so a running gate does not change when you switch branches or install again) and makes a state folder for your account, `~/.testslot`, with its `holders/` and `logs/`. Then it prints the line to add to your shell profile (shown here for a user named alice):
 
 ```
 Installed testslot in /home/alice/.local/bin and made the state folder /home/alice/.testslot.
@@ -66,7 +66,7 @@ export TESTSLOT_DIR="/var/lib/testslot"
 
 On macOS the shared folder is `/Users/Shared/testslot`, and no `sudo` is needed for it. A per-account folder such as `$HOME/.testslot` gates only that account, and must be made first.
 
-A CI job usually runs as its own account, and `~/.local/bin` is per account, so `testslot` must be installed for that account. Either run `make install` as the CI account (the file goes into that account's own `~/.local/bin`), or put one copy where every account's `PATH` reaches, for example `sudo install -m 755 testslot /usr/local/bin/testslot` (then the `PATH` line below is not needed). In the job itself, set the state folder and call `testslot`. To gate against other accounts on the host, point the job at the shared folder (the CI account must be in its group):
+A CI job usually runs as its own account, and `~/.local/bin` is per account, so `testslot` must be installed for that account. Either run `make install` as the CI account (the code goes into that account's own `~/.local`), or put one copy where every account's `PATH` reaches, for example `sudo make install PREFIX=/usr/local` (it also makes a state folder in the home of the account that ran it, which the job does not use; the `PATH` line below is then not needed). In the job itself, set the state folder and call `testslot`. To gate against other accounts on the host, point the job at the shared folder (the CI account must be in its group):
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"       # only when testslot is in the CI account's own ~/.local/bin
@@ -137,7 +137,7 @@ Settings are read from files in the state folder; environment variables are used
 
 ## Requirements
 
-- Python 3.9 or newer and a Unix host (Linux or macOS). `testslot` is one file with no packages to install. The 3.9 minimum comes from a static check of the file with [vermin](https://github.com/netromdk/vermin), and `testslot run` and `testslot status` were run on Python 3.9.6.
+- Python 3.9 or newer and a Unix host (Linux or macOS). `testslot` is a small package of standard-library modules, with nothing to install but itself (`make install` does that). The 3.9 minimum comes from a static check of the code with [vermin](https://github.com/netromdk/vermin), and `testslot run` and `testslot status` were run on Python 3.9.6.
 - A state folder that every account using the gate can write to (`make install` and `make install-shared` make it).
 
 ## Running the tests
@@ -150,7 +150,7 @@ On macOS the tests need GNU `timeout`, which macOS does not have. `brew install 
 
 ## Specification
 
-The full interface, every setting and every exit code are in the docstring at the top of the [`testslot`](./testslot) file. [`spec/README.md`](./spec/README.md) describes a TLA+ model (a formal model checked by machine) of the admission rules and what checking it found.
+The full interface, every setting and every exit code are in the docstring at the top of [`lib/testslot/cli.py`](./lib/testslot/cli.py), the package's command module (`testslot` itself is a short entry script). [`spec/README.md`](./spec/README.md) describes a TLA+ model (a formal model checked by machine) of the admission rules and what checking it found.
 
 ## License
 

@@ -2,7 +2,14 @@
 
 What changed in each release, newest first.
 
-## Unreleased
+## 1.1.0 (2026-11-16)
+
+### Install
+
+- testslot is now a small package: an entry script and the modules under `lib/testslot/`. Nothing changes for users: the command, its options and its output are the same.
+- `make install` puts each version in its own folder under `~/.local/lib` and swaps the link in `~/.local/bin` in one step, so a run that is already going is never touched, and running it twice changes nothing. An old one-file install is replaced by the same step.
+
+### README
 
 - The README shows a tests badge and an MIT license badge under its title.
 

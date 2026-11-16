@@ -7,12 +7,13 @@
 # This script creates /Users/Shared/testslot for state (no sudo, any local
 # account can share the gate). Cap 6 cpus; every run waits while the 1-minute load is 10 or more
 # (12 cores, and the herd sessions alone keep the load high), and a run pauses itself while the
-# host starts over 120 processes a second (the Mac hung at 200 to 340). The command is a copy, not a
-# link, so an edit in this repo goes live only by running this again.
+# host starts over 120 processes a second (the Mac hung at 200 to 340). The command is a copy of the package, not a
+# link into this repo, so an edit here goes live only by running this again.
 set -euo pipefail
 [ "$(uname -s)" = Darwin ] || { echo "setup-mac.sh: this is for the Mac; a Linux host uses its own provisioning script" >&2; exit 1; }
-src="$(cd "$(dirname "$0")" && pwd)/testslot"
-dir=/Users/Shared/testslot
+here="$(cd "$(dirname "$0")" && pwd)"
+# TESTSLOT_MAC_DIR is for tests, which run this into a scratch state folder and a scratch HOME
+dir="${TESTSLOT_MAC_DIR:-/Users/Shared/testslot}"
 # /Users/Shared is world-writable: a folder or file someone else made first is refused, never adopted,
 # and nothing here follows a planted symlink. The folder stays group-writable (every local account is
 # in staff) because any account prunes another's dead holders; the gate is cooperative, as on a Linux host.
@@ -38,8 +39,9 @@ touch "$dir/history.jsonl"
 chgrp staff "$dir/cap" "$dir/load-cap" "$dir/start-rate-cap" "$dir/history.jsonl"
 chmod 644 "$dir/cap" "$dir/load-cap" "$dir/start-rate-cap"
 chmod 664 "$dir/history.jsonl"
-mkdir -p "$HOME/.local/bin"
-install -m 755 "$src" "$HOME/.local/bin/testslot"
+# the package (the entry script and lib/testslot) goes in by testslot's own make install: a testslot-<hash> folder under
+# ~/.local/lib and a link in ~/.local/bin, swapped by one rename, so a run using the old copy is never written to
+make -s -C "$here" install PREFIX="$HOME/.local" STATE="$dir" >/dev/null
 echo "folder $(stat -f '%Su:%Sg %Lp' "$dir"), history $(stat -f '%Su:%Sg %Lp' "$dir/history.jsonl")"
-echo "installed $HOME/.local/bin/testslot ($(shasum -a 256 "$HOME/.local/bin/testslot" | cut -c1-12)); state in $dir, cap $(cat "$dir/cap"), load-cap $(cat "$dir/load-cap"), start-rate-cap $(cat "$dir/start-rate-cap")"
-"$HOME/.local/bin/testslot" status | head -2
+echo "installed $HOME/.local/bin/testslot -> $(readlink "$HOME/.local/bin/testslot"); state in $dir, cap $(cat "$dir/cap"), load-cap $(cat "$dir/load-cap"), start-rate-cap $(cat "$dir/start-rate-cap")"
+TESTSLOT_DIR="$dir" "$HOME/.local/bin/testslot" status | head -2

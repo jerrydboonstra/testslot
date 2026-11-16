@@ -6,6 +6,7 @@
 # /var/lib/testslot) needs both logins and is not run here.
 set -uo pipefail
 T=${1:-testslot}
+export TS_SHIM_DIR=$(cd "$(dirname "$0")" && pwd)  # test_shim.py sits beside this file: it loads the package for the inline checks
 # an absolute path: the odd-folder case cds away, and a relative ./testslot would no longer resolve there
 case $T in */*) T=$(cd "$(dirname "$T")" && pwd)/$(basename "$T") ;; *) T=$(command -v "$T") || { echo "no $1 on PATH"; exit 1; } ;; esac
 export TESTSLOT_DIR=$(mktemp -d /tmp/testslot-test.XXXXXX)
@@ -663,8 +664,8 @@ echo 3 > "$TESTSLOT_DIR/cap"
 python3 -c "
 import importlib.machinery, importlib.util, os
 os.environ.pop('TESTSLOT_CAP', None)
-l = importlib.machinery.SourceFileLoader('ts', '$(cd "$(dirname "$T")" 2>/dev/null && pwd)/$(basename "$T")')
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ts', l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load('$(cd "$(dirname "$T")" 2>/dev/null && pwd)/$(basename "$T")')
 import time
 open('$TESTSLOT_DIR/cap', 'w').write('3\n'); a = m.read_cap()
 time.sleep(0.3)  # past the quarter-second reuse
@@ -721,8 +722,8 @@ TP=$(command -v "$T")
 for v in 0 0.1 inf nan abc 1e308 7; do
   printf '%s ' "$v"; TESTSLOT_SAMPLE_S=$v python3 -c "
 import importlib.machinery, importlib.util
-l = importlib.machinery.SourceFileLoader('ts', '$TP')
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ts', l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load('$TP')
 print(m.SAMPLE_S)" 2>/dev/null
 done > "$O/sample.txt"
 [ "$(tr '\n' ' ' < "$O/sample.txt")" = "0 0.5 0.1 0.5 inf 3.0 nan 3.0 abc 3.0 1e308 3600.0 7 7.0 " ] \
@@ -746,8 +747,8 @@ unset TESTSLOT_SAMPLE_S
 # check alone: the suite's own cap of 2 would clamp the declared 4.)
 TESTSLOT_CAP=10 python3 -c "
 import importlib.machinery, importlib.util
-l = importlib.machinery.SourceFileLoader('ts', '$TP')
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ts', l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load('$TP')
 h = {'kind': 'light', 'cpus': 4}
 c = lambda **kw: m.charged_cpus(dict(h, **kw))
 checks = [
@@ -777,8 +778,8 @@ while read -r verdict rest; do [ "$verdict" = PASS ] && ok "$rest" || fail "$res
 # Cap 10, margin 1 (the default).
 cat > "$O/shrink_unit.py" <<'PY'
 import importlib.machinery, importlib.util, sys, time
-l = importlib.machinery.SourceFileLoader('ts', sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ts', l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
 h = {'kind': 'light', 'cpus': 4, 'observed': 0.1, 'observed_via': 'cgroup', 'shrunk': True, 'sampled_at': time.time(), 'sample_s': 3}
 c = lambda **kw: round(m.charged_cpus(dict(h, **kw)), 3)
 def with_margin(v, f):
@@ -821,8 +822,8 @@ while read -r verdict rest; do [ "$verdict" = PASS ] && ok "$rest" || fail "$res
 # the shrink time and the margin are set like the reserve ($DIR file, else env var), validated and clamped
 cat > "$O/shrink_cfg.py" <<'PY'
 import importlib.machinery, importlib.util, sys
-l = importlib.machinery.SourceFileLoader('ts', sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ts', l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
 print(getattr(m, 'SHRINK_AFTER_S', None), getattr(m, 'SHRINK_MARGIN', None))
 PY
 cfg() { TESTSLOT_SHRINK_AFTER=$1 TESTSLOT_SHRINK_MARGIN=$2 python3 "$O/shrink_cfg.py" "$TP" 2>/dev/null; }
@@ -893,8 +894,8 @@ unset TESTSLOT_OBSERVED TESTSLOT_OBSERVED_VIA TESTSLOT_SHRINK_AFTER TESTSLOT_SAM
 vd=$(mktemp -d /tmp/testslot-test.XXXXXX); mkdir -p "$vd/holders"; echo "7.5 7.5 7.5 1/100 1" > "$vd/loadavg"
 TESTSLOT_DIR=$vd TESTSLOT_CAP=20 TESTSLOT_LOAD_CAP=10 TESTSLOT_LOADAVG=$vd/loadavg python3 - "$TP" > "$O/why.txt" 2>"$O/why.err" <<'PY'
 import importlib.machinery, importlib.util, sys
-l = importlib.machinery.SourceFileLoader('ts', sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ts', l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
 hold = [{'pid': 4242, 'state': 'running', 'kind': 'light', 'cpus': 8}]
 w = lambda hs, n: m.why_wait(hs, 1, 100.0, n)
 msg = w(hold, 4)
@@ -1280,8 +1281,8 @@ cat > "$O/clock0.py" <<'PY'
 import importlib.machinery, importlib.util, io, os, sys, time
 os.environ["TESTSLOT_PLATFORM"] = "darwin"
 time.monotonic = lambda: 0.005
-l = importlib.machinery.SourceFileLoader("ts", sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader("ts", l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
 mine = m.proc_stat(os.getpid())
 print(("PASS" if mine and m.alive(os.getpid()) and os.getpid() in m.ps_table() else "FAIL") + " clock near 0: ps_table lists this process and alive() sees it")
 sys.argv = ["testslot", "status"]
@@ -1314,8 +1315,8 @@ awk -v s="$s" -v e="$e" 'BEGIN{exit !(e - s < 0.5)}' && ok "status under 0.5s" |
 P=$O/tsrate.py
 cat > "$P" <<'PY'
 import importlib.machinery, importlib.util, sys
-l = importlib.machinery.SourceFileLoader("ts", sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader("ts", l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
 def check(ok, what): print(("PASS " if ok else "FAIL ") + what)
 check(m.pid_starts(1000, 1400) == 399, "21a: macOS reading, probe pids 1000 then 1400 read 399 starts")
 check(m.pid_starts(99990, 120) == 28, "21g: across the pid wrap (99990 then 120: 99991-99998 and 100-120, less the probe) 28 starts, not a burst")
@@ -1422,8 +1423,8 @@ unset TESTSLOT_START_RATE_CAP TESTSLOT_FAKE_START_RATE
 P=$O/tsload.py
 cat > "$P" <<'PY'
 import importlib.machinery, importlib.util, sys, time
-l = importlib.machinery.SourceFileLoader("ts", sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader("ts", l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
 def check(ok, what): print(("PASS " if ok else "FAIL ") + what)
 m.read_cap = lambda: 20
 def h(pid, cpus, seen, kind="light", since=100, state="running", **kw):
@@ -1497,8 +1498,8 @@ unset TESTSLOT_OBSERVED_DIR TESTSLOT_SAMPLE_S TESTSLOT_FAKE_START_RATE
 P=$O/tsrequeue.py
 cat > "$P" <<'PY'
 import importlib.machinery, importlib.util, sys
-l = importlib.machinery.SourceFileLoader("ts", sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader("ts", l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
 def check(ok, what): print(("PASS " if ok else "FAIL ") + what)
 m.read_cap = lambda: 6
 m.REQUEUE_AFTER_S = 300.0
@@ -1581,8 +1582,8 @@ unset TESTSLOT_OBSERVED_DIR TESTSLOT_OBSERVED TESTSLOT_SAMPLE_S TESTSLOT_REQUEUE
 wd=$(mktemp -d /tmp/testslot-test.XXXXXX); mkdir -p "$wd/holders"; echo "1.0 1.0 1.0 1/100 1" > "$wd/loadavg"
 TESTSLOT_DIR=$wd TESTSLOT_CAP=20 TESTSLOT_LOAD_CAP=10 TESTSLOT_LOADAVG=$wd/loadavg python3 - "$T" > "$O/wr.txt" 2>"$O/wr.err" <<'PY'
 import importlib.machinery, importlib.util, os, sys, time
-l = importlib.machinery.SourceFileLoader('ts', sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ts', l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
 set_load = lambda v: open(os.environ['TESTSLOT_LOADAVG'], 'w').write(v + ' 1.0 1.0 1/100 1\n')
 run = lambda n: {'pid': 4242, 'state': 'running', 'kind': 'light', 'cpus': n}
 wait = lambda age, n=4: {'pid': 4243, 'state': 'waiting', 'kind': 'light', 'cpus': n, 'queued': time.time() - age}
@@ -1760,8 +1761,8 @@ export TESTSLOT_RESERVE=600
 wf=$(mktemp -d /tmp/testslot-test.XXXXXX); mkdir -p "$wf/holders"; echo "1.0 1.0 1.0 1/100 1" > "$wf/loadavg"
 TESTSLOT_DIR=$wf TESTSLOT_CAP=20 TESTSLOT_LOAD_CAP=10 TESTSLOT_LOADAVG=$wf/loadavg TESTSLOT_RESERVE=600 python3 - "$T" > "$O/w25f.txt" 2>"$O/w25f.err" <<'PY'
 import importlib.machinery, importlib.util, sys, time
-l = importlib.machinery.SourceFileLoader('ts', sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ts', l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
 run = {'pid': 4242, 'state': 'running', 'kind': 'light', 'cpus': 8}
 head = lambda age: {'pid': 4243, 'state': 'waiting', 'kind': 'light', 'cpus': 4, 'queued': time.time() - age}
 # a head the load holds back (12 cpus on top of load 1.0 is over the load cap 10): it reserves at 6 x RESERVE = 3600 s
@@ -1791,8 +1792,8 @@ rm -rf "$wf"
 # 25g. The limit is kept on a requeue (exec_requeue puts --max-minutes back, in decimal minutes from limit_s) and shown by status.
 python3 - "$T" > "$O/w25g.txt" 2>"$O/w25g.err" <<'PY'
 import importlib.machinery, importlib.util, sys
-l = importlib.machinery.SourceFileLoader('ts', sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ts', l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
 seen = []
 m.os.execv = lambda exe, argv: seen.append(argv)
 rec = {'requeue_peak': 3.0, 'requeue_declared': 1.0, 'requeue_load': 5.0, 'key': 'k', 'limit_s': 120}
@@ -1867,8 +1868,8 @@ python3 - "$T" "$wj" > "$O/w25j.txt" 2>"$O/w25j.err" <<'PY'
 import importlib.machinery, importlib.util, os, sys
 os.environ.pop('TESTSLOT_BACKFILL_LIMIT', None)
 os.environ['TESTSLOT_DIR'] = sys.argv[2]
-l = importlib.machinery.SourceFileLoader('ts', sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ts', l)); l.exec_module(m)
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
 res = [('no file, no env: 30', m.read_backfill_limit() == 30.0)]
 os.environ['TESTSLOT_BACKFILL_LIMIT'] = '7'
 res.append(('env 7', m.read_backfill_limit() == 7.0))
@@ -2044,6 +2045,101 @@ PY
   fi
 else
   echo "skip 100 install targets (no Makefile beside the tool, or no make)"
+fi
+
+# 101. The package (testslot-package-split): the code is lib/testslot/*.py behind a short entry script, and make install swaps it in
+# without a moment of no testslot. Scratch folders only. The tree checks need the checkout (lib/ and Makefile beside the tool).
+d=$(dirname "$T")
+if [ -f "$d/Makefile" ] && [ -d "$d/lib/testslot" ] && command -v make >/dev/null; then
+  # 101a to 101c: the shape of the tree (the entry script under 40 lines, no module over 600, standard library only, nothing
+  # imported inside a function, no cycle between modules, and util imports nothing from the package).
+  python3 -I - "$d" > "$O/shape.txt" 2>&1 <<'PY'
+import ast, glob, os, sys
+d = sys.argv[1]
+bad = []
+n = len(open(os.path.join(d, "testslot")).read().splitlines())
+print("entry %d lines" % n)
+if n >= 40: bad.append("101a: the entry script is %d lines, not under 40" % n)
+std = set("datetime fcntl getpass hashlib json math os pwd re shutil signal subprocess sys threading time traceback".split())
+mods = sorted(os.path.basename(f)[:-3] for f in glob.glob(os.path.join(d, "lib", "testslot", "*.py")) if not f.endswith("__init__.py"))
+deps = {}
+for m in mods:
+    path = os.path.join(d, "lib", "testslot", m + ".py"); src = open(path).read(); t = ast.parse(src)
+    if len(src.splitlines()) > 600: bad.append("101a: %s.py has %d lines, over 600" % (m, len(src.splitlines())))
+    deps[m] = set()
+    for node in ast.walk(t):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            top = node.col_offset == 0
+            names = [a.name for a in node.names]
+            if not top: bad.append("101b: %s.py imports inside a function (line %d)" % (m, node.lineno))
+            if isinstance(node, ast.ImportFrom):
+                if node.module != "testslot": bad.append("101b: %s.py: from %s import (line %d)" % (m, node.module, node.lineno))
+                deps[m] |= set(names)
+            else:
+                for x in names:
+                    if x.split(".")[0] not in std: bad.append("101b: %s.py imports %s, not the standard library" % (m, x))
+if deps.get("util"): bad.append("101c: util imports from the package: %s" % sorted(deps["util"]))
+state = {}
+def visit(u, path):
+    if u in path: bad.append("101c: import cycle %s" % " -> ".join(path[path.index(u):] + [u])); return
+    if state.get(u): return
+    state[u] = 1
+    for v in sorted(deps.get(u, ())): visit(v, path + [u])
+for m in mods: visit(m, [])
+print("\n".join(bad) if bad else "ALL OK")
+PY
+  if grep -q '^ALL OK' "$O/shape.txt"; then
+    ok "101a: the entry script is under 40 lines and no module is over 600"; ok "101b: modules import only the standard library, none inside a function"; ok "101c: no import cycle, and util imports nothing from the package"
+  else
+    for c in 101a 101b 101c; do grep -q "^$c" "$O/shape.txt" && fail "$(grep "^$c" "$O/shape.txt" | head -2 | paste -sd'|' -)" || ok "$c: shape check passed"; done
+  fi
+  # 101d: make install twice leaves one code folder and one link; over an old single-file install it replaces the file in one rename
+  P=$I/pk; mkdir -p "$P/bin"; printf '#!/bin/sh\necho old\n' > "$P/bin/testslot"; chmod 755 "$P/bin/testslot"
+  mk install PREFIX="$P" STATE="$P/st" > "$P/out1" 2>&1; c1=$?
+  mk install PREFIX="$P" STATE="$P/st" > "$P/out2" 2>&1; c2=$?
+  n=$(ls -d "$P"/lib/testslot-* 2>/dev/null | wc -l | tr -d ' ')
+  if [ $c1 = 0 ] && [ $c2 = 0 ] && [ -L "$P/bin/testslot" ] && [ "$n" = 1 ] && [ "$(ls -A "$P/bin" | tr '\n' ' ')" = "testslot " ] && cmp -s "$P/out1" "$P/out2" \
+     && [ "$(ls -A "$P/lib" | grep -c tmp)" = 0 ]; then
+    ok "101d: make install over an old single-file install, twice: one link, one code folder, nothing of the old file, same output"
+  else fail "101d: install over an old file (exit $c1/$c2): link=$([ -L "$P/bin/testslot" ] && echo y || echo n) folders=$n bin=[$(ls -A "$P/bin" | tr '\n' ' ')]"; fi
+  # 101e: the installed testslot runs from another folder, and through a link of its own in another folder
+  mkdir -p "$I/elsewhere"; ln -s "$P/bin/testslot" "$I/elsewhere/ts-link"
+  out=$(cd / && TESTSLOT_DIR="$P/st" "$P/bin/testslot" run --cpus 1 -- echo ok 2>/dev/null)
+  out2=$(cd "$I/elsewhere" && TESTSLOT_DIR="$P/st" ./ts-link run --cpus 1 -- echo ok2 2>/dev/null)
+  [ "$out" = ok ] && [ "$out2" = ok2 ] && ok "101e: the installed command runs from another folder, and through a link in another folder" \
+    || fail "101e: installed command printed '$out' and through a link '$out2'"
+  # 101f: two more installs of changed code keep the current folder and the one before it, and drop the older
+  V=$I/tree2; mkdir -p "$V"; cp -R "$d/Makefile" "$d/testslot" "$d/lib" "$V/"; find "$V" -name __pycache__ -prune -exec rm -r {} + 2>/dev/null
+  echo "# v2" >> "$V/lib/testslot/util.py"; make -s -C "$V" install PREFIX="$P" STATE="$P/st" >/dev/null 2>&1
+  echo "# v3" >> "$V/lib/testslot/util.py"; make -s -C "$V" install PREFIX="$P" STATE="$P/st" >/dev/null 2>&1
+  n=$(ls -d "$P"/lib/testslot-* 2>/dev/null | wc -l | tr -d ' ')
+  tgt=$(readlink "$P/bin/testslot"); h3=$(basename "$(dirname "$tgt")")
+  [ "$n" = 2 ] && [ -x "$P/lib/$h3/testslot" ] && grep -q '^# v3' "$P/lib/$h3/lib/testslot/util.py" \
+    && ok "101f: three installs of changing code leave the current folder and the one before" || fail "101f: $n code folders after three installs, link to $tgt"
+  # 101g: an install while a run holds a slot: the run finishes, frees its slot, and the new code is what starts next
+  echo "# v4" >> "$V/lib/testslot/util.py"
+  hb=$(grep -c '"exit": 7' "$P/st/history.jsonl" 2>/dev/null); hb=${hb:-0}
+  TESTSLOT_DIR="$P/st" "$P/bin/testslot" run --cpus 1 -- bash -c 'sleep 4; exit 7' >/dev/null 2>"$P/g.err" &
+  rp=$!; sleep 1.5
+  make -s -C "$V" install PREFIX="$P" STATE="$P/st" >/dev/null 2>&1; ic=$?
+  wait $rp; rc=$?
+  left=$(ls "$P/st/holders" 2>/dev/null | wc -l | tr -d ' ')
+  out=$(TESTSLOT_DIR="$P/st" "$P/bin/testslot" run --cpus 1 -- echo after 2>/dev/null)
+  ha=$(grep -c '"exit": 7' "$P/st/history.jsonl" 2>/dev/null); ha=${ha:-0}
+  # the exit code and the empty holders folder are not enough: the holder is unlinked before the history line is written, so a run
+  # that lost its code at the end would still exit 7. Its stderr must hold no error, and its history line must be written.
+  [ $ic = 0 ] && [ $rc = 7 ] && [ "$left" = 0 ] && [ "$out" = after ] && ! grep -q '^testslot error' "$P/g.err" && [ "$ha" = $((hb + 1)) ] \
+    && ok "101g: an install during a run: the run ended with its own exit code 7, freed its slot, wrote its history line with no error, and the next run starts on the new code" \
+    || fail "101g: install exit $ic, run exit $rc (want 7), holders left $left, next run printed '$out', history lines with exit 7 $hb -> $ha, stderr: $(head -c 160 "$P/g.err" | paste -sd'|' -)"
+  # 101h: an internal error names the line in the module where it happened, as it named a line of the one file before
+  TESTSLOT_TEST_CRASH=boom "$T" status >/dev/null 2>"$O/crash2.err"
+  grep -qE '^testslot error: RuntimeError: boom \(line [0-9]+\)$' "$O/crash2.err" \
+    && ok "101h: an internal error prints the error and a line number from the package" || fail "101h: the internal error line was: $(head -c 200 "$O/crash2.err")"
+  # 101i: running from the checkout leaves no bytecode behind
+  "$T" --help >/dev/null 2>&1
+  [ -z "$(find "$d/lib" -name __pycache__ 2>/dev/null | head -1)" ] && ok "101i: no __pycache__ in the checkout after running it" || fail "101i: a __pycache__ folder sits under lib/"
+else
+  echo "skip 101 package checks (no Makefile or lib/ beside the tool, or no make)"
 fi
 
 echo "$fails failed"
