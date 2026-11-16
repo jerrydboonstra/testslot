@@ -2,6 +2,10 @@
 
 What changed in each release, newest first.
 
+## Unreleased
+
+- The README shows a tests badge and an MIT license badge under its title.
+
 ## 1.0.0 (2026-11-16)
 
 ### The gate
