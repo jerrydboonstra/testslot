@@ -52,7 +52,8 @@ pgid_of() { local p; for _ in $(seq 50); do p=$("$T" status | awk -v k="  $1" 'i
 # up to 5s, for a loaded box; a timeout says what never happened, so a later failure isn't a silent mystery
 # wait for one background pid, but never for ever: after 30s say so and stop it. The exit code is left in $bwc.
 bwaitp() { for _ in $(seq 300); do kill -0 "$1" 2>/dev/null || { wait "$1" 2>/dev/null; bwc=$?; return 0; }; sleep 0.1; done
-  echo "     (pid $1 still running after 30s)"; kill -CONT "$1" 2>/dev/null; kill "$1" 2>/dev/null; wait "$1" 2>/dev/null; bwc=$?; return 1; }
+  echo "     (pid $1 still running after 30s)"; kill -CONT "$1" 2>/dev/null; kill "$1" 2>/dev/null
+  for _ in $(seq 50); do kill -0 "$1" 2>/dev/null || break; sleep 0.1; done; kill -KILL "$1" 2>/dev/null; wait "$1" 2>/dev/null; bwc=$?; return 1; }
 until_true() { for _ in $(seq 50); do eval "$1" && return 0; sleep 0.1; done; echo "     (timed out after 5s waiting for: $1)"; return 1; }
 # the two light runs hold for HOLD seconds: long enough for a slow probe on a loaded box to see both
 HOLD=3

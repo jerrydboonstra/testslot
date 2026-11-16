@@ -2000,7 +2000,10 @@ def cmd_run(argv):
         if not hasattr(os, "waitid"):
             return False
         try:
-            return os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+            r = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            # macOS answers for a child that is only stopped (si_code CLD_STOPPED), where Linux answers None until it
+            # exits: so a load-paused or throttle-paused leader would count as ended and a stop would be ignored.
+            return r is not None and r.si_code in (os.CLD_EXITED, os.CLD_KILLED, os.CLD_DUMPED)
         except ChildProcessError:
             return True  # our own child, already reaped (wait() reaps before it sets returncode): it ended
         except OSError:

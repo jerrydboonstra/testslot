@@ -2,13 +2,13 @@
 
 # testslot
 
-A test gate for one machine. Several people, agents or CI jobs can run test suites on the same host, and `testslot` makes each run wait its turn so together they stay inside a cpu budget and a load limit.
+A test gate for one machine. Several people, agents or CI jobs can run test suites on the same host, and `testslot` makes each run wait its turn: a run starts only when its declared cpus are free under a cpu cap and the host's load is under a load cap.
 
 ## What it is
 
-`testslot run --cpus 4 -- make test` waits until 4 cpus are free under the cap and the host's 1-minute load is under the load cap, then runs the command and prints its output as usual. A run returns the command's exit code. An internal failure prints `testslot error: ...` on stderr and exits `70` if the command has not already finished; the docstring lists the exit codes. Smaller runs may start ahead of a bigger one that is waiting, but a long wait for the bigger one reserves cpus for it, so it cannot starve. A run that would start ahead of a waiting one needs a time limit (`--max-minutes N`), so it cannot hold the queue up for long; without one it simply waits its turn. A normal run needs no limit. A run also pauses itself for up to 3 seconds at a time if the host is starting processes faster than a start-rate cap.
+`testslot run --cpus 4 -- make test` waits until 4 cpus are free under the cap and the host's 1-minute load is under the load cap, then runs the command and prints its output as usual. A run declares its cpus; testslot waits for them and checks the load before it starts, but it does not limit what the command then uses, and `--cpus` does not set the command's own parallelism (pass that to the command, for example `make -j4`). A run returns the command's exit code. An internal failure prints `testslot error: ...` on stderr and exits `70` if the command has not already finished; the docstring lists the exit codes. Smaller runs may start ahead of a bigger one that is waiting, but a long wait for the bigger one reserves cpus for it, so it cannot starve. A run that would start ahead of a waiting one needs a time limit (`--max-minutes N`), so it cannot hold the queue up for long; without one it simply waits its turn. A normal run needs no limit. A run also pauses itself for up to 3 seconds at a time if the host is starting processes faster than a start-rate cap.
 
-Every account on the host shares one gate. The gate is cooperative: it queues programs that use `testslot run`, and counts other work only through the load.
+Accounts share one gate only when they use the same state folder: the default (`/var/lib/testslot` on Linux, `/Users/Shared/testslot` on macOS) or one `TESTSLOT_DIR` that all of them set. The per-user example under Install gives a gate for one account. The gate is cooperative: it queues programs that use `testslot run`, and counts other work only through the load.
 
 ## What you need
 
@@ -26,9 +26,9 @@ export TESTSLOT_DIR=$HOME/.testslot        # the state folder; any folder you ow
 mkdir -p "$TESTSLOT_DIR/holders" "$TESTSLOT_DIR/logs"
 ```
 
-`testslot` does not create the state folder, and exits with a "not set up" message when it is missing. Put both `export` lines in your shell profile so every shell sees them. With `TESTSLOT_DIR` unset the default is `/var/lib/testslot` on Linux (making it needs root), and a shared folder on macOS.
+`testslot` does not create the state folder, and exits with a "not set up" message when it is missing. Put both `export` lines in your shell profile so every shell sees them. With `TESTSLOT_DIR` unset the default is `/var/lib/testslot` on Linux (making it needs root), and `/Users/Shared/testslot` on macOS.
 
-To share one gate between accounts, use a shared folder (for example `/var/lib/testslot`), give it to a group they all belong to (`chgrp -R <group>` and `chmod -R g+rws`), and set the same `TESTSLOT_DIR` for each account.
+To share one gate between accounts, use a shared folder (for example `/var/lib/testslot`), give it to a group they all belong to (`chgrp -R <group> "$TESTSLOT_DIR"` and `chmod -R g+rws "$TESTSLOT_DIR"`), and set the same `TESTSLOT_DIR` for each account.
 
 Settings are read from files in the state folder; environment variables are used when those files are missing or invalid:
 
@@ -60,7 +60,7 @@ Declare the cpus your command really uses (for `make`, its `-j`). The default is
 
 ## Specification
 
-The full interface, every setting and every exit code are in the docstring at the top of the `testslot` file. `spec/README.md` describes a TLA+ model (a formal model checked by machine) of the admission rules and what checking it found.
+The full interface, every setting and every exit code are in the docstring at the top of the [`testslot`](./testslot) file. [`spec/README.md`](./spec/README.md) describes a TLA+ model (a formal model checked by machine) of the admission rules and what checking it found.
 
 ## License
 
