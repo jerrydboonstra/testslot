@@ -1041,7 +1041,7 @@ if linux; then
   until_long '[ -n "$(jfield pgid)" ]' || fail "20j: the run behind a failing systemd-run never showed as running"
   [ "$(jfield observed_via)" = group ] && case "$(jfield cgroup_note)" in *"failed to start"*) true ;; *) false ;; esac && ok "a failed launch is rerun by group with a note ($(jfield cgroup_note))" || fail "20j: observed_via '$(jfield observed_via)', note '$(jfield cgroup_note)'"
   bwait || fail "20j: the run did not end in 30s"
-  [ "$(wc -l < "$O/l.out")" = 1 ] && ok "the command ran exactly once after a failed launch" || fail "20j: the command ran $(wc -l < "$O/l.out" 2>/dev/null) times"
+  [ "$(wc -l < "$O/l.out" | tr -d ' ')" = 1 ] && ok "the command ran exactly once after a failed launch" || fail "20j: the command ran $(wc -l < "$O/l.out" 2>/dev/null) times"
   # 20r. A launcher that stays alive and never starts the command: after TESTSLOT_LAUNCH_S the launcher is stopped, the
   # command runs once by group, and nothing of the launcher is left. The wait is bounded (the slot is not held for ever).
   printf '#!/bin/sh\nexec sleep 619.%s\n' "$$" > "$O/shim/systemd-run"
@@ -1051,7 +1051,7 @@ if linux; then
   until_long '[ -n "$(jfield pgid)" ]' || fail "20r: the run behind a stuck launcher never showed as running"
   case "$(jfield cgroup_note)" in *"did not start the command in 1 s"*) ok "a stuck launcher is stopped after the launch bound, with a note" ;; *) fail "20r: note '$(jfield cgroup_note)'" ;; esac
   bwait || fail "20r: the run did not end in 30s"
-  [ "$(wc -l < "$O/r.out")" = 1 ] && ok "the command ran exactly once after a stuck launcher" || fail "20r: the command ran $(wc -l < "$O/r.out" 2>/dev/null) times"
+  [ "$(wc -l < "$O/r.out" | tr -d ' ')" = 1 ] && ok "the command ran exactly once after a stuck launcher" || fail "20r: the command ran $(wc -l < "$O/r.out" 2>/dev/null) times"
   pgrep -f "^sleep 619\\.$$" >/dev/null && fail "20r: the stuck launcher was left running" || ok "the stuck launcher was stopped"
   rm -f "$O/shim/systemd-run"
   if cg_ok; then
@@ -1104,7 +1104,7 @@ print(round(sum(float(open(f).read()) for f in glob.glob('$O/burn.[1-4]')), 2))"
     bwait || fail "20g: the run did not end in 30s"
     rm -f "$O/g.out"
     "$T" run --cpus 1 -- bash -c "echo x >> $O/g.out; exit 3" >/dev/null 2>&1; c=$?
-    [ $c = 3 ] && [ "$(wc -l < "$O/g.out")" = 1 ] && ok "exit 3 comes back as 3 through the scope, and the command ran once" || fail "20g: exit $c, started $(wc -l < "$O/g.out" 2>/dev/null) times"
+    [ $c = 3 ] && [ "$(wc -l < "$O/g.out" | tr -d ' ')" = 1 ] && ok "exit 3 comes back as 3 through the scope, and the command ran once" || fail "20g: exit $c, started $(wc -l < "$O/g.out" 2>/dev/null) times"
     "$T" run --cpus 1 -- bash -c 'kill -TERM $$' >/dev/null 2>&1; c=$?
     [ $c = 143 ] && ok "a command killed by TERM returns 143 through the scope" || fail "20g: TERM death came back as $c"
     r=$(echo hello-stdin | "$T" run --cpus 1 -- cat 2>/dev/null)
@@ -1565,7 +1565,7 @@ echo "0.50 5.00 5.00 1/100 1" > "$TESTSLOT_LOADAVG"
 bwaitp "$bpX"
 [ "$bwc" = 7 ] && ok "23j: the caller got the second run's exit code (7)" || fail "23j: exit $bwc"
 bwaitp "$bpW"
-[ "$(wc -l < "$O/x_starts")" = 2 ] && ok "23j: the command started twice" || fail "23j: starts: $(wc -l < "$O/x_starts")"
+[ "$(wc -l < "$O/x_starts" | tr -d ' ')" = 2 ] && ok "23j: the command started twice" || fail "23j: starts: $(wc -l < "$O/x_starts")"
 x2=$(sed -n 2p "$O/x_starts"); w1=$(cat "$O/w_start" 2>/dev/null)
 awk -v a="$x2" -v b="$w1" 'BEGIN{exit !(a != "" && b != "" && a < b)}' && ok "23j: the requeued run started before the 5-cpu run that was already waiting (head of the queue)" || fail "23j: requeued run started at $x2, W at $w1"
 pgY=$(rpg "reqY.$$"); [ -n "$pgY" ] && "$T" stop "$pgY" >/dev/null 2>&1; bwaitp "$lpY"
@@ -1615,7 +1615,7 @@ set_load('1.0')
 tx = m.why_wait([run(20)], 1, time.time(), 1)
 print(('PASS ' if tx and tx.startswith('cpus:') else 'FAIL ') + 'why_wait still returns the reason text')
 PY
-[ "$(wc -l < "$O/wr.txt")" = 11 ] || { fail "24a: the check printed $(wc -l < "$O/wr.txt") of 11 lines (it stopped early)"; sed 's/^/     /' "$O/wr.err"; }
+[ "$(wc -l < "$O/wr.txt" | tr -d ' ')" = 11 ] || { fail "24a: the check printed $(wc -l < "$O/wr.txt") of 11 lines (it stopped early)"; sed 's/^/     /' "$O/wr.err"; }
 while read -r verdict rest; do [ "$verdict" = PASS ] && ok "24a: $rest" || fail "24a: $rest"; done < "$O/wr.txt"
 rm -rf "$wd"
 # 24b. A run held on the cpus: its holder and status carry "cpus" while it waits, and its history line carries it once admitted.
@@ -1696,7 +1696,7 @@ chk = [
 for name, good in chk: print(("PASS " if good else "FAIL ") + name)
 PY
 while read -r verdict rest; do [ "$verdict" = PASS ] && ok "25a: $rest" || fail "25a: $rest"; done < "$O/w25a.txt"
-[ "$(wc -l < "$O/w25a.txt")" = 5 ] || fail "25a: the check printed $(wc -l < "$O/w25a.txt") of 5 lines: $(head -3 "$O/w25a.txt")"
+[ "$(wc -l < "$O/w25a.txt" | tr -d ' ')" = 5 ] || fail "25a: the check printed $(wc -l < "$O/w25a.txt") of 5 lines: $(head -3 "$O/w25a.txt")"
 # 25b. A head waits; a 2-cpu run with no limit (2 cpus, so the next run isn't queued behind one of its own size), and one with a limit over the backfill limit (set to 1 minute), don't start,
 # and their wait reason names the run ahead and the limit. Both show the code no-limit.
 TESTSLOT_CAP=4 "$T" run --cpus 3 -- bash -c ": wr25b-holder; sleep 9" >/dev/null 2>&1 &
@@ -1784,7 +1784,7 @@ rows = [
 ]
 for name, good in rows: print(('PASS ' if good else 'FAIL ') + name)
 PY
-[ "$(wc -l < "$O/w25f.txt")" = 12 ] || { fail "25f: the check printed $(wc -l < "$O/w25f.txt") of 12 lines"; sed 's/^/     /' "$O/w25f.err" | tail -3; }
+[ "$(wc -l < "$O/w25f.txt" | tr -d ' ')" = 12 ] || { fail "25f: the check printed $(wc -l < "$O/w25f.txt") of 12 lines"; sed 's/^/     /' "$O/w25f.err" | tail -3; }
 while read -r verdict rest; do [ "$verdict" = PASS ] && ok "25f: $rest" || fail "25f: $rest"; done < "$O/w25f.txt"
 rm -rf "$wf"
 # 25g. The limit is kept on a requeue (exec_requeue puts --max-minutes back, in decimal minutes from limit_s) and shown by status.
@@ -1804,7 +1804,7 @@ m.exec_requeue(rec2, ['true'], '/dev/null')
 print(('PASS ' if seen and '--max-minutes' not in seen[0] else 'FAIL ') + 'a run with no limit is requeued with none')
 PY
 while read -r verdict rest; do [ "$verdict" = PASS ] && ok "25g: $rest" || fail "25g: $rest"; done < "$O/w25g.txt"
-[ "$(wc -l < "$O/w25g.txt")" = 2 ] || fail "25g: the check printed $(wc -l < "$O/w25g.txt") of 2 lines: $(head -2 "$O/w25g.err")"
+[ "$(wc -l < "$O/w25g.txt" | tr -d ' ')" = 2 ] || fail "25g: the check printed $(wc -l < "$O/w25g.txt") of 2 lines: $(head -2 "$O/w25g.err")"
 TESTSLOT_CAP=4 "$T" run --cpus 1 --max-minutes 2 -- bash -c ": wr25g; sleep 4" >/dev/null 2>&1 &
 gp=$!
 until_true '[ "$(holding light)" = 1 ]' || fail "25g: the limited run never showed as holding"
@@ -1879,8 +1879,24 @@ for bad in ('0', '-3', 'nan', 'inf', 'x'):
 for name, good in res: print(('PASS ' if good else 'FAIL ') + name)
 PY
 while read -r verdict rest; do [ "$verdict" = PASS ] && ok "25j: backfill limit: $rest" || fail "25j: backfill limit: $rest"; done < "$O/w25j.txt"
-[ "$(wc -l < "$O/w25j.txt")" = 8 ] || fail "25j: the check printed $(wc -l < "$O/w25j.txt") of 8 lines: $(head -3 "$O/w25j.err")"
+[ "$(wc -l < "$O/w25j.txt" | tr -d ' ')" = 8 ] || fail "25j: the check printed $(wc -l < "$O/w25j.txt") of 8 lines: $(head -3 "$O/w25j.err")"
 rm -rf "$wj"
+
+# 96. testslot-not-set-up-message: a missing state folder is explained with only what the public repo has (make the folder
+# with holders/ and logs/, or set TESTSLOT_DIR), and names no script outside it.
+out=$(TESTSLOT_DIR="$O/no-such-state-dir" "$T" run --cpus 1 -- true 2>&1); rc=$?
+[ "$rc" = 2 ] && ok "96a: a missing state folder exits 2" || fail "96a: a missing state folder exited $rc, not 2"
+case $out in *"not set up"*) ok "96b: the message says the folder is not set up";; *) fail "96b: no 'not set up' in: $out";; esac
+case $out in *holders*logs*TESTSLOT_DIR*|*TESTSLOT_DIR*holders*logs*) ok "96c: it says to make holders/ and logs/ or set TESTSLOT_DIR";; *) fail "96c: the message names neither the folders nor TESTSLOT_DIR: $out";; esac
+case $out in *provision-linux*|*setup-mac*|*agent-tools*) fail "96d: the message names a script or repo outside testslot: $out";; *) ok "96d: the message names no script or repo outside testslot";; esac
+case $out in *"make holders/ and logs/ inside it"*) ok "96e: the TESTSLOT_DIR alternative says to make holders/ and logs/ inside the chosen folder";; *) fail "96e: the TESTSLOT_DIR alternative does not say to make holders/ and logs/ inside it: $out";; esac
+case $out in *README*g+rws*) ok "96f: it points at the README's sharing steps (group, g+rws)";; *) fail "96f: no pointer to the README's sharing steps in: $out";; esac
+# the recovery the message describes works: an owned empty folder is still not set up, and is once holders/ and logs/ are in it
+rd="$O/own-state-dir"; mkdir -p "$rd"
+TESTSLOT_DIR="$rd" "$T" run --cpus 1 -- true >/dev/null 2>&1; rc1=$?
+mkdir -p "$rd/holders" "$rd/logs"
+TESTSLOT_DIR="$rd" "$T" run --cpus 1 -- true >/dev/null 2>&1; rc2=$?
+[ "$rc1" = 2 ] && [ "$rc2" = 0 ] && ok "96g: an owned folder fails until holders/ and logs/ are made in it, then runs" || fail "96g: owned folder exit codes were $rc1 then $rc2, not 2 then 0"
 
 # 97. Contributor kit (testslot-contrib-kit): the files exist beside the tool, name nothing from the project they were
 # copied from, and the YAML ones load. An installed copy has no README beside it, so the case skips there.
@@ -1920,6 +1936,15 @@ if [ -f "$d/README.md" ]; then
   got=$(grep -E '^#{2} ' "$d/README.md" | sed 's/^## //' | paste -sd, -)
   want="What it is,What you need,Install,Usage,Specification,License"
   [ "$got" = "$want" ] && ok "98c: README headings are $want" || fail "98c: README headings are '$got', want '$want'"
+  # 98e: the Install section puts the install folder on PATH: it holds an export of $HOME/.local/bin ahead of PATH.
+  if awk '/^## Install/{f=1;next} /^## /{f=0} f' "$d/README.md" | grep -qE '^export PATH="\$HOME/\.local/bin:\$PATH"'; then
+    ok "98e: README's Install section puts ~/.local/bin on PATH"
+  else fail "98e: README's Install section has no export of \$HOME/.local/bin onto PATH"; fi
+  # 98f: the README opens with the logo: a first-line <img> whose src is images/logo.png, with an alt text, and the file exists.
+  first=$(head -1 "$d/README.md")
+  if printf '%s' "$first" | grep -qE '^<img src="images/logo\.png" alt="[^"]+"' && [ -f "$d/images/logo.png" ]; then
+    ok "98f: README opens with the logo image"
+  else fail "98f: README's first line is not an <img> of images/logo.png with an alt text (or the file is missing): $first"; fi
   # 98d: the README names no word from the owner's private-word list. The list lives outside the repo (GUARD_WORDS, one word
   # a line, blank and # lines skipped, a whole word matched as written, as in the other public repos' guard); none is written here.
   if [ -z "${GUARD_WORDS:-}" ]; then

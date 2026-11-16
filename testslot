@@ -1925,7 +1925,9 @@ def cmd_run(argv):
         die("run: a heavy run can't start inside a light one (it would wait on its own parent); "
             "run the outer command with --heavy", 1)
     if not os.path.isdir(HOLDERS):
-        die(f"{DIR} is not set up (run provision-linux.sh{'' if LINUX else ', or on a Mac: agent-tools testslot/setup-mac.sh'})")
+        die(f"{DIR} is not set up: make it with its holders/ and logs/ folders "
+            f'(mkdir -p "{DIR}/holders" "{DIR}/logs"), or set TESTSLOT_DIR to a folder you own and make holders/ and logs/ inside it; '
+            "to share one gate between accounts, see the README's sharing steps (group, chmod -R g+rws)")
 
     me = getpass.getuser()
     prune(me)

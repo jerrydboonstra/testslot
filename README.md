@@ -1,3 +1,5 @@
+<img src="images/logo.png" alt="A wooden tray of four round slots, three holding balls, with a ramp feeding a red ball into the empty fourth." width="320">
+
 # testslot
 
 A test gate for one machine. Several people, agents or CI jobs can run test suites on the same host, and `testslot` makes each run wait its turn so together they stay inside a cpu budget and a load limit.
@@ -19,11 +21,12 @@ From this folder, copy the `testslot` file onto your `PATH` and make a state fol
 
 ```sh
 mkdir -p ~/.local/bin && install -m 755 testslot ~/.local/bin/testslot   # any folder on your PATH works
+export PATH="$HOME/.local/bin:$PATH"       # needed if that folder is not on your PATH yet (it is not, by default, on macOS)
 export TESTSLOT_DIR=$HOME/.testslot        # the state folder; any folder you own works
 mkdir -p "$TESTSLOT_DIR/holders" "$TESTSLOT_DIR/logs"
 ```
 
-`testslot` does not create the state folder, and exits with a "not set up" message when it is missing. Put the `export` line in your shell profile so every shell sees it. With `TESTSLOT_DIR` unset the default is `/var/lib/testslot` on Linux (making it needs root), and a shared folder on macOS.
+`testslot` does not create the state folder, and exits with a "not set up" message when it is missing. Put both `export` lines in your shell profile so every shell sees them. With `TESTSLOT_DIR` unset the default is `/var/lib/testslot` on Linux (making it needs root), and a shared folder on macOS.
 
 To share one gate between accounts, use a shared folder (for example `/var/lib/testslot`), give it to a group they all belong to (`chgrp -R <group>` and `chmod -R g+rws`), and set the same `TESTSLOT_DIR` for each account.
 
