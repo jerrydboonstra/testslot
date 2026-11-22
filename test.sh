@@ -27,7 +27,7 @@ mir=
 # the cgroup cases (20) start sleeps named 600-619 plus $$, and one helper loop; a failing case must not leave them behind.
 # The busy loops that trap TERM (7f, 18) carry "tsorph.$$" in their command line, so this trap can KILL them: killing
 # the testslot wrapper alone (kill -9 $w) leaves its bash child behind with ppid 1.
-trap '[ -n "$mir" ] && kill $mir 2>/dev/null; pkill -f "$TESTSLOT_DIR" 2>/dev/null; pkill -f "sleep 6[01][0-9]\\.$$" 2>/dev/null; pkill -9 -f "tsorph\\.$$" 2>/dev/null; rm -rf "$TESTSLOT_DIR"' EXIT
+trap '[ -n "$mir" ] && kill $mir 2>/dev/null; pkill -f "$TESTSLOT_DIR" 2>/dev/null; pkill -f "sleep 6[01][0-9]\\.$$" 2>/dev/null; pkill -9 -f "tsorph\\.$$" 2>/dev/null; pkill -9 -f "settle[A-D]\\.$$" 2>/dev/null; rm -rf "$TESTSLOT_DIR"' EXIT
 fails=0
 ok()   { echo "ok   $1"; }
 fail() { echo "FAIL $1"; fails=$((fails + 1)); }
@@ -1451,6 +1451,9 @@ python3 "$P" "$T" > "$O/tsload.txt" 2>"$O/tsload.err"
 while read -r verdict rest; do [ "$verdict" = PASS ] && ok "$rest" || fail "$rest"; done < "$O/tsload.txt"
 
 oldcap=$(cat "$TESTSLOT_DIR/cap" 2>/dev/null); echo 6 > "$TESTSLOT_DIR/cap"
+# the settle window (case 103) at its floor, 5 s: 22i, 22j and 23 pause and resume the same run again within seconds, which the 30 s default
+# would hold for longer than until_long waits, so this is required. Their assertions are as before
+export TESTSLOT_PAUSE_WINDOW=5
 unset TESTSLOT_OBSERVED TESTSLOT_START_RATE_CAP TESTSLOT_FAKE_START_RATE
 export TESTSLOT_SAMPLE_S=0.5 TESTSLOT_OBSERVED_DIR=$O/obsdir TESTSLOT_FAKE_START_RATE=$O/rate2; echo 0 > "$O/rate2"
 rm -rf "$O/obsdir"; mkdir -p "$O/obsdir"
@@ -1572,7 +1575,7 @@ x2=$(sed -n 2p "$O/x_starts"); w1=$(cat "$O/w_start" 2>/dev/null)
 awk -v a="$x2" -v b="$w1" 'BEGIN{exit !(a != "" && b != "" && a < b)}' && ok "23j: the requeued run started before the 5-cpu run that was already waiting (head of the queue)" || fail "23j: requeued run started at $x2, W at $w1"
 pgY=$(rpg "reqY.$$"); [ -n "$pgY" ] && "$T" stop "$pgY" >/dev/null 2>&1; bwaitp "$lpY"
 echo "0.00 0.00 0.00 1/100 1" > "$TESTSLOT_LOADAVG"
-unset TESTSLOT_OBSERVED_DIR TESTSLOT_OBSERVED TESTSLOT_SAMPLE_S TESTSLOT_REQUEUE_AFTER_S
+unset TESTSLOT_OBSERVED_DIR TESTSLOT_OBSERVED TESTSLOT_SAMPLE_S TESTSLOT_REQUEUE_AFTER_S TESTSLOT_PAUSE_WINDOW
 [ -n "$oldcap" ] && echo "$oldcap" > "$TESTSLOT_DIR/cap" || rm -f "$TESTSLOT_DIR/cap"
 
 # 24. Wait reason. A waiting run records why it waits as a stable code (reserved, queued-ahead, cpus,
@@ -1587,9 +1590,13 @@ m = test_shim.load(sys.argv[1])
 set_load = lambda v: open(os.environ['TESTSLOT_LOADAVG'], 'w').write(v + ' 1.0 1.0 1/100 1\n')
 run = lambda n: {'pid': 4242, 'state': 'running', 'kind': 'light', 'cpus': n}
 wait = lambda age, n=4: {'pid': 4243, 'state': 'waiting', 'kind': 'light', 'cpus': n, 'queued': time.time() - age}
-def code(hs, n=1):
-    r = getattr(m, 'wait_check', lambda *a: ('no wait_check',))(hs, 1, time.time(), n)
+def code(hs, n=1, ci=False):
+    try:
+        r = m.wait_check(hs, 1, time.time(), n, None, ci) if ci else getattr(m, 'wait_check', lambda *a: ('no wait_check',))(hs, 1, time.time(), n)
+    except TypeError:
+        return 'no ci argument'
     return r[0] if r else None
+ciw = lambda age, n=1: {'pid': 4244, 'state': 'waiting', 'kind': 'light', 'cpus': n, 'queued': time.time() - age, 'ci': True}
 seen = set()
 for want, hs, n, load in [
   ('reserved', [run(8), wait(700)], 1, '1.0'),
@@ -1601,6 +1608,10 @@ for want, hs, n, load in [
 ]:
     set_load(load)
     got = code(hs, n); seen.add(got)
+    print(('PASS ' if got == want else 'FAIL ') + f'wait_check gives code {want}' + ('' if got == want else f' (got {got})'))
+set_load('1.0')
+for want, hs, n, ci in [('ci-first', [ciw(5)], 1, False), ('ci-priority', [run(20)], 1, True)]:
+    got = code(hs, n, ci); seen.add(got)
     print(('PASS ' if got == want else 'FAIL ') + f'wait_check gives code {want}' + ('' if got == want else f' (got {got})'))
 codes = getattr(m, 'WAIT_CODES', None)
 print(('PASS ' if codes and set(codes) - {'gate'} == seen else 'FAIL ') + 'every code but the gate is driven above, and WAIT_CODES lists them all (a new reason without a code fails here)')
@@ -1617,7 +1628,7 @@ set_load('1.0')
 tx = m.why_wait([run(20)], 1, time.time(), 1)
 print(('PASS ' if tx and tx.startswith('cpus:') else 'FAIL ') + 'why_wait still returns the reason text')
 PY
-[ "$(wc -l < "$O/wr.txt" | tr -d ' ')" = 11 ] || { fail "24a: the check printed $(wc -l < "$O/wr.txt") of 11 lines (it stopped early)"; sed 's/^/     /' "$O/wr.err"; }
+[ "$(wc -l < "$O/wr.txt" | tr -d ' ')" = 13 ] || { fail "24a: the check printed $(wc -l < "$O/wr.txt") of 13 lines (it stopped early)"; sed 's/^/     /' "$O/wr.err"; }
 while read -r verdict rest; do [ "$verdict" = PASS ] && ok "24a: $rest" || fail "24a: $rest"; done < "$O/wr.txt"
 rm -rf "$wd"
 # 24b. A run held on the cpus: its holder and status carry "cpus" while it waits, and its history line carries it once admitted.
@@ -2141,6 +2152,331 @@ PY
 else
   echo "skip 101 package checks (no Makefile or lib/ beside the tool, or no make)"
 fi
+
+# 102. The history line carries testslot's own error (testslot-history-records-errors). A run testslot broke after it was admitted
+# records `error` (the text after "testslot error: ", without the "(line N)"), and `exit` is the command's own code when the command had
+# ended (null when it never started). A run with no error of its own has no `error` field. hist_field prints one field of the last
+# history line as JSON, or <absent>; hist_find prints it for the last line whose command holds a word.
+hist_field() { python3 - "$TESTSLOT_DIR/history.jsonl" "$1" "${2:-}" <<'PY'
+import json, sys
+last = None
+for l in open(sys.argv[1]):
+    l = l.strip()
+    if l:
+        d = json.loads(l)
+        if not sys.argv[3] or sys.argv[3] in (d.get("command") or ""):
+            last = d
+print(json.dumps(last.get(sys.argv[2], "<absent>") if last else "<noline>"))
+PY
+}
+# 102a and 102b: the crash after the command ended (the after-wait hook): the line has exit 3 and the same text the stderr line prints
+: > "$TESTSLOT_DIR/history.jsonl"
+TESTSLOT_TEST_CRASH=after-wait "$T" run --cpus 1 -- bash -c "exit 3" >/dev/null 2>"$O/h102a.err"; c=$?
+[ "$c" = 3 ] && [ "$(hist_field exit)" = 3 ] && ok "102a: an after-wait crash: the process exits 3 and the history line has exit 3 (null before this item)" \
+  || fail "102a: process exit $c, history exit $(hist_field exit)"
+want=$(sed -n 's/^testslot error: \(.*\) (line [0-9]*)$/\1/p' "$O/h102a.err")
+[ -n "$want" ] && [ "$(hist_field error)" = "\"$want\"" ] && ok "102b: the history line's error is the text of the stderr line, without its (line N)" \
+  || fail "102b: stderr says '$want', history error $(hist_field error)"
+# 102c: the crash after admission and before the command starts: the command never runs, exit null, and the error is recorded
+: > "$TESTSLOT_DIR/history.jsonl"; rm -f "$O/h102c.ran"
+TESTSLOT_TEST_CRASH=after-admit "$T" run --cpus 1 -- bash -c "touch $O/h102c.ran" >/dev/null 2>"$O/h102c.err"; c=$?
+[ "$c" = 70 ] && [ ! -e "$O/h102c.ran" ] && [ "$(hist_field exit)" = null ] && [ "$(hist_field error)" = '"RuntimeError: after admission, before the command"' ] \
+  && ok "102c: a crash after admission and before the command: exit 70, the command never ran, history exit null with the error" \
+  || fail "102c: process exit $c, ran $([ -e "$O/h102c.ran" ] && echo yes || echo no), history exit $(hist_field exit) error $(hist_field error)"
+# 102d: the group outlived the kill (the keep-holder hook): the holder record stays, and the next run's prune writes the line with exit and error
+: > "$TESTSLOT_DIR/history.jsonl"
+TESTSLOT_TEST_KEEP_HOLDER=1 TESTSLOT_TEST_CRASH=after-wait "$T" run --cpus 1 -- bash -c "exit 7" >/dev/null 2>&1; c=$?
+[ -n "$(ls "$TESTSLOT_DIR/holders" 2>/dev/null)" ] && [ "$(hist_field exit)" = '"<noline>"' ] || fail "102d: expected a kept holder and no line yet (holders: $(ls "$TESTSLOT_DIR/holders" | tr '\n' ' '), line: $(hist_field exit))"
+"$T" run --cpus 1 -- true >/dev/null 2>&1
+[ "$c" = 7 ] && [ "$(hist_field exit 'exit 7')" = 7 ] && [ "$(hist_field error 'exit 7')" = '"RuntimeError: after the command ended"' ] \
+  && ok "102d: prune writes the kept run's line with exit 7 and the error" || fail "102d: process exit $c, line exit $(hist_field exit 'exit 7') error $(hist_field error 'exit 7')"
+# 102e: guard: a run with no testslot error has no error field, and a crash before admission writes no line, as before
+: > "$TESTSLOT_DIR/history.jsonl"
+"$T" run --cpus 1 -- bash -c "exit 4" >/dev/null 2>&1
+[ "$(hist_field exit)" = 4 ] && [ "$(hist_field error)" = '"<absent>"' ] && ok "102e: a run with no testslot error has exit 4 and no error field" || fail "102e: exit $(hist_field exit), error $(hist_field error)"
+: > "$TESTSLOT_DIR/history.jsonl"
+TESTSLOT_TEST_CRASH=boom "$T" run --cpus 1 -- true >/dev/null 2>&1
+[ "$(hist_field exit)" = '"<noline>"' ] && ok "102f: a crash before admission writes no history line" || fail "102f: a line was written: exit $(hist_field exit)"
+# 102g: an internal error in the cleanup after the command (the in-cleanup hook) is recorded too: the process keeps the command's
+# code and prints the line, the record is kept, and the next prune writes exit 6 and the error
+: > "$TESTSLOT_DIR/history.jsonl"
+TESTSLOT_TEST_CRASH=in-cleanup "$T" run --cpus 1 -- bash -c "exit 6" >/dev/null 2>"$O/h102g.err"; c=$?
+"$T" run --cpus 1 -- true >/dev/null 2>&1
+[ "$c" = 6 ] && grep -q '^testslot error: RuntimeError: in the cleanup' "$O/h102g.err" && [ "$(hist_field exit 'exit 6')" = 6 ] \
+  && [ "$(hist_field error 'exit 6')" = '"RuntimeError: in the cleanup"' ] \
+  && ok "102g: an error in the cleanup is recorded: the process exits 6 and prints it, and prune writes exit 6 and the error" \
+  || fail "102g: process exit $c, line exit $(hist_field exit 'exit 6') error $(hist_field error 'exit 6'); stderr: $(head -c 160 "$O/h102g.err")"
+# 102h: the error text in a history line is cut to 500 characters (prune writes lines from any account's holder file)
+dd=$(cd "$(dirname "$T")" && pwd)
+if [ -d "$dd/lib/testslot" ]; then
+  n=$(python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from testslot import state; print(len(state.history_line({"since": 1, "error": "x" * 10000}, 2, 0)["error"]))' "$dd/lib" 2>&1)
+  [ "$n" = 500 ] && ok "102h: a 10000-character error is cut to 500 in the history line" || fail "102h: the error field was $n characters long"
+fi
+
+# 103. The load pause waits for load to settle (testslot-pause-settle): at most one load pause and one load resume per window
+# across the host, the newest pause resuming first. TESTSLOT_TEST_CLOCK names a file holding the time every pause read uses
+# (frozen between steps, so nothing here waits a real window); the state is $TESTSLOT_DIR/pause-window-state.
+P=$O/tspause.py
+cat > "$P" <<'PY'
+import importlib.machinery, importlib.util, sys, time, os, json
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
+def check(ok, what): print(("PASS " if ok else "FAIL ") + what)
+D = os.environ["TESTSLOT_DIR"]
+def window(env=None, file=None):
+    for k in ("TESTSLOT_PAUSE_WINDOW",):
+        os.environ.pop(k, None)
+    f = os.path.join(D, "pause-window")
+    if os.path.exists(f): os.unlink(f)
+    if env is not None: os.environ["TESTSLOT_PAUSE_WINDOW"] = env
+    if file is not None: open(f, "w").write(file + "\n")
+    try: return m.read_pause_window()
+    finally:
+        os.environ.pop("TESTSLOT_PAUSE_WINDOW", None)
+        if os.path.exists(f): os.unlink(f)
+check(window() == 30, "103a: no setting: the window is 30 s")
+check(window(file="10") == 10, "103a: a pause-window file of 10 gives 10")
+check(window(file="1000") == 300, "103a: 1000 clamps to 300")
+check(window(file="1") == 5, "103a: 1 clamps to 5")
+check(window(env="20", file="10") == 20, "103a: TESTSLOT_PAUSE_WINDOW beats the file")
+check(window(env="1000", file="10") == 300, "103a: the environment value is clamped too")
+check(window(env="junk", file="12") == 12, "103a: a bad environment value falls through to the file")
+check(window(file="junk") == 30, "103a: a bad file falls through to the default")
+st = os.path.join(D, "pause-window-state")
+if os.path.exists(st): os.unlink(st)
+c = m.window_claim
+check(c("pause", 30, 1000.0) is True, "103b: the first pause is allowed")
+check(c("pause", 30, 1029.0) is False, "103b: a second pause 29 s later is refused")
+check(c("pause", 30, 1030.0) is True, "103b: a second pause 30 s later is allowed")
+check(c("resume", 30, 1031.0) is True, "103b: a resume is a window of its own: a pause just before does not hold it")
+check(c("resume", 30, 1040.0) is False, "103b: a second resume 9 s later is refused")
+check(json.load(open(st)) == {"pause": 1030.0, "resume": 1031.0}, "103b: pause-window-state holds the last pause and the last resume")
+check(c("pause", 30, 500.0) is True, "103b: a clock that went back is outside the window")
+check(os.path.exists(os.path.join(D, "pause.lock")), "103b: the window is read and written under pause.lock")
+lk = os.path.join(D, "pause.lock"); os.unlink(lk); os.mkdir(lk)   # a lock that can't be opened: the throttle thread must not die
+check(m.window_claim_safe("pause", 30, 9000.0) is False and m.window_claim_safe("resume", 30, 9000.0) is True, "103b: a lock that can't be opened: no pause is taken, a resume is")
+os.rmdir(lk)
+def h(pid, since, **kw):
+    d = {"pid": pid, "load_paused_since": since, "orphan": False}; d.update(kw); return d
+n = m.newest_paused
+check(n([h(1, 100.0), h(2, 300.0), h(3, 200.0)])["pid"] == 2, "103c: the newest load pause is chosen")
+check(n([h(1, 100.0), h(2, 300.0, orphan=True)])["pid"] == 1, "103c: an orphan is skipped, so a dead record never blocks a resume")
+check(n([h(1, None), h(2, None)]) is None, "103c: no load-paused run: none")
+check(n([h(1, 100.0, paused_since=50.0), h(2, None)])["pid"] == 1, "103c: a run held by both pauses still counts")
+ck = os.path.join(D, "clock-unit"); open(ck, "w").write("5000\n"); m.TEST_CLOCK = ck
+check(m.now() == 5000.0, "103c: the clock seam gives the time in its file")
+check(m.pausing({"resumed_at": 5000.0}) is True and m.pausing({"resumed_at": 4000.0}) is False, "103c: pausing() reads the seam's time, not the wall clock")
+m.TEST_CLOCK = ""; os.unlink(ck)
+check(abs(m.now() - time.time()) < 5, "103c: with no seam, the wall clock")
+PY
+python3 "$P" "$T" > "$O/tspause.txt" 2>"$O/tspause.err"
+[ -s "$O/tspause.txt" ] || { fail "103a: the unit checks did not run"; sed 's/^/     /' "$O/tspause.err"; }
+while read -r verdict rest; do [ "$verdict" = PASS ] && ok "$rest" || fail "$rest"; done < "$O/tspause.txt"
+rm -f "$TESTSLOT_DIR/pause-window-state" "$TESTSLOT_DIR/pause.lock"
+
+oldcap=$(cat "$TESTSLOT_DIR/cap" 2>/dev/null); echo 6 > "$TESTSLOT_DIR/cap"
+unset TESTSLOT_OBSERVED TESTSLOT_START_RATE_CAP TESTSLOT_FAKE_START_RATE TESTSLOT_PAUSE_WINDOW
+export TESTSLOT_SAMPLE_S=0.5 TESTSLOT_OBSERVED_DIR=$O/obsdir103 TESTSLOT_FAKE_START_RATE=$O/rate103; echo 0 > "$O/rate103"
+rm -rf "$O/obsdir103"; mkdir -p "$O/obsdir103"; rm -f "$TESTSLOT_DIR/pause-window"
+CK=$O/clock103; echo 1000000 > "$CK"; export TESTSLOT_TEST_CLOCK=$CK
+held() { [ -n "$1" ] && [ "$(lstate "$1")" = T ]; }
+going() { [ -n "$1" ] && [ -n "$(lstate "$1")" ] && [ "$(lstate "$1")" != T ]; }   # alive and not stopped: false for a run that never started
+clk() { echo "$1" > "$CK.tmp" && mv "$CK.tmp" "$CK"; }   # atomic: a tick must never read a half-written clock
+wst() { python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ''))" "$TESTSLOT_DIR/pause-window-state" "$1" 2>/dev/null; }
+echo "0.50 0.50 0.50 1/100 1" > "$TESTSLOT_LOADAVG"
+# A, B and C over-use (4, 3 and 2 cpus of 1 declared), D is honest (a guard: it is never paused)
+for n in A B C D; do "$T" run --cpus 1 -- bash -c ": settle$n.$$; sleep 120" >/dev/null 2>"$O/st$n.err" & eval "sp$n=\$!"; done
+for n in A B C D; do until_long '[ -n "$(rpg "settle$n.$$")" ]' || fail "103d: run $n never showed as running"; eval "sg$n=\$(rpg \"settle$n.$$\")"; done
+echo 4 > "$O/obsdir103/$sgA"; echo 3 > "$O/obsdir103/$sgB"; echo 2 > "$O/obsdir103/$sgC"; echo 1 > "$O/obsdir103/$sgD"
+sleep 2
+# 103d. a held trigger and three over-users: one pause now, the next one a window after it, the third a window after that
+echo "1000.00 5.00 5.00 1/100 1" > "$TESTSLOT_LOADAVG"
+until_long 'held $sgA' && ok "103d: the worst over-user is paused" || fail "103d: A was not paused, state '$(lstate "$sgA")'"
+sleep 3
+going $sgB && going $sgC && ok "103d: with the trigger held, no second or third run is paused inside the window" || fail "103d: B '$(lstate "$sgB")', C '$(lstate "$sgC")' (the clock has not moved)"
+num "$(wst pause)" == 1000000 && ok "103d: pause-window-state records the pause time" || fail "103d: state pause '$(wst pause)'"
+clk 1000029; sleep 3
+going $sgB && ok "103d: 29 s later the second run is still not paused" || fail "103d: B paused at 29 s"
+clk 1000030
+until_long 'held $sgB' && ok "103d: 30 s later the next over-user is paused" || fail "103d: B was not paused after the window, state '$(lstate "$sgB")'"
+num "$(wst pause)" == 1000030 && ok "103d: the two recorded pauses are 30 s apart (the default window)" || fail "103d: state pause '$(wst pause)'"
+sleep 3
+going $sgC && ok "103d: the third over-user is not paused inside the second window" || fail "103d: C paused with the clock still"
+clk 1000060
+until_long 'held $sgC' && ok "103d: one more window on, the third is paused" || fail "103d: C was not paused, state '$(lstate "$sgC")'"
+going $sgD && ok "103d: the honest run is never paused" || fail "103d: D was paused"
+# 103e. load falls with A, B and C paused: newest pause first (C, B, A), a window apart
+echo "0.50 5.00 5.00 1/100 1" > "$TESTSLOT_LOADAVG"
+until_long 'going $sgC' && ok "103e: the newest-paused run resumes first" || fail "103e: C still stopped"
+sleep 3
+held $sgB && held $sgA && ok "103e: the older pauses stay held inside the window" || fail "103e: A '$(lstate "$sgA")', B '$(lstate "$sgB")' resumed with the clock still"
+num "$(wst resume)" == 1000060 && ok "103e: pause-window-state records the resume time" || fail "103e: state resume '$(wst resume)'"
+clk 1000089; sleep 3
+held $sgB && ok "103e: 29 s after the first resume the next is still held" || fail "103e: B resumed at 29 s"
+clk 1000090
+until_long 'going $sgB' && ok "103e: one window after the first, the next-newest resumes" || fail "103e: B still stopped after the window"
+num "$(wst resume)" == 1000090 && ok "103e: the two recorded resumes are 30 s apart" || fail "103e: state resume '$(wst resume)'"
+sleep 3
+held $sgA && ok "103e: the oldest pause is not resumed inside the second window" || fail "103e: A resumed early"
+clk 1000120
+until_long 'going $sgA' && ok "103e: and the oldest one a window after that" || fail "103e: A still stopped"
+# 103f. the window setting is live: a pause-window file of 10, then 1000 (clamped to 300), read from the gap between recorded pauses
+echo 10 > "$TESTSLOT_DIR/pause-window"; clk 1000200; sleep 2
+echo "1000.00 5.00 5.00 1/100 1" > "$TESTSLOT_LOADAVG"
+until_long 'held $sgA' && num "$(wst pause)" == 1000200 || fail "103f: A was not paused again"
+clk 1000209; sleep 3
+going $sgB && ok "103f: with a window of 10, 9 s after a pause nothing else is paused" || fail "103f: B paused at 9 s"
+clk 1000210
+until_long 'held $sgB' && num "$(wst pause)" == 1000210 && ok "103f: 10 s after, the next is paused: the recorded gap is the file's 10 s" || fail "103f: B not paused after 10 s (state pause '$(wst pause)')"
+echo 1000 > "$TESTSLOT_DIR/pause-window"; clk 1000509; sleep 3
+going $sgC && ok "103f: a window of 1000 is clamped to 300: 299 s after a pause nothing is paused" || fail "103f: C paused at 299 s"
+clk 1000510
+until_long 'held $sgC' && num "$(wst pause)" == 1000510 && ok "103f: 300 s after, the next is paused: the recorded gap is 300 s" || fail "103f: C not paused after 300 s (state pause '$(wst pause)')"
+# 103g. a stop of a load-paused run is not held by the resume window: with the load low the newest pause (C) resumes and takes the
+# window (clock frozen, so it is open), then a stop of B, still load-paused, ends it at once
+echo "0.50 5.00 5.00 1/100 1" > "$TESTSLOT_LOADAVG"
+until_long 'going $sgC' || fail "103g: C did not resume"
+num "$(wst resume)" == 1000510 && held $sgB || fail "103g: the resume window is not open with B held (state resume '$(wst resume)', B '$(lstate "$sgB")')"
+"$T" stop "$sgB" >/dev/null; bwaitp "$spB"
+[ -z "$(pgrep -g "$sgB" 2>/dev/null)" ] && ok "103g: stop on a load-paused run while the resume window is closed ends it" || fail "103g: group $sgB left"
+for n in A C D; do eval "g=\$sg$n"; "$T" stop "$g" >/dev/null 2>&1; done
+bwaitp "$spA"; bwaitp "$spC"; bwaitp "$spD"
+echo "0.00 0.00 0.00 1/100 1" > "$TESTSLOT_LOADAVG"
+unset TESTSLOT_OBSERVED_DIR TESTSLOT_SAMPLE_S TESTSLOT_FAKE_START_RATE TESTSLOT_TEST_CLOCK
+rm -f "$TESTSLOT_DIR/pause-window" "$TESTSLOT_DIR/pause-window-state" "$TESTSLOT_DIR/pause.lock"
+[ -n "$oldcap" ] && echo "$oldcap" > "$TESTSLOT_DIR/cap" || rm -f "$TESTSLOT_DIR/cap"
+
+# 104. The README's badge row (testslot-badge-ci-label): CI first, labelled CI, then the license, then the release badge; and the
+# CHANGELOG says so in a 1.2.0 section above 1.1.0. The files sit beside the tool; an installed copy has no README.
+d=$(dirname "$T")
+if [ -f "$d/README.md" ]; then
+  row=$(grep -m1 '^\[!\[' "$d/README.md")
+  want='[![CI](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml/badge.svg)](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![release](https://img.shields.io/github/v/release/jerrydboonstra/testslot)](https://github.com/jerrydboonstra/testslot/releases/latest)'
+  [ "$row" = "$want" ] && ok "104a: the README badge row is CI, license, release, in that order" || fail "104a: the README badge row is '$row'"
+  case $row in "[![CI]("*) ok "104b: the first badge is labelled CI" ;; *) fail "104b: the first badge is not labelled CI: '${row%%]*}'" ;; esac
+  u=$(grep -n '^## 1\.2\.0 ' "$d/CHANGELOG.md" | head -1 | cut -d: -f1); r=$(grep -n '^## 1\.1\.0 ' "$d/CHANGELOG.md" | head -1 | cut -d: -f1)
+  [ -n "$u" ] && [ -n "$r" ] && [ "$u" -lt "$r" ] && sed -n "${u},${r}p" "$d/CHANGELOG.md" | grep -q 'badge.*CI\|CI.*badge' \
+    && ok "104c: the CHANGELOG has a 1.2.0 section above 1.1.0 that says the badge is labelled CI" || fail "104c: no 1.2.0 section above 1.1.0 naming the CI badge (1.2.0 at line '${u:-none}', 1.1.0 at '${r:-none}')"
+  grep -q 'The README shows a tests badge' "$d/CHANGELOG.md" && ok "104d: the shipped 1.1.0 line about the tests badge is left as written" || fail "104d: the shipped 1.1.0 line was edited"
+fi
+
+# 105. CI first: `testslot run --ci`, only for the users in $DIR/ci-users; while a CI run waits or holds,
+# no new non-CI run is admitted; a CI run goes ahead of every queued non-CI run; status says which is which.
+P=$O/tsci.py
+cat > "$P" <<'PY'
+import importlib.machinery, importlib.util, os, sys, time
+import os, sys; sys.path.insert(0, os.environ['TS_SHIM_DIR']); import test_shim
+m = test_shim.load(sys.argv[1])
+def check(ok, what): print(("PASS " if ok else "FAIL ") + what)
+set_load = lambda v: open(os.environ['TESTSLOT_LOADAVG'], 'w').write(v + ' 1.0 1.0 1/100 1\n')
+set_load('1.0')
+run = lambda n, **k: dict({'pid': 4242, 'state': 'running', 'kind': 'light', 'cpus': n}, **k)
+wait = lambda age, n=4, **k: dict({'pid': 4243, 'state': 'waiting', 'kind': 'light', 'cpus': n, 'queued': time.time() - age}, **k)
+def wc(hs, n=1, ci=False):
+    try:
+        r = m.wait_check(hs, 1, time.time(), n, None, ci)
+    except TypeError:
+        return ('no ci argument',)
+    return r
+code = lambda r: r[0] if r else None
+check(code(wc([run(1, ci=True)])) == 'ci-first', "105a: a CI run holding a slot holds back a non-CI run (ci-first)")
+check(code(wc([wait(5, 1, ci=True, pid=4244)])) == 'ci-first', "105a: so does a CI run still waiting")
+check(wc([run(1)]) is None, "105a: with no CI run on the host a non-CI run starts as before")
+check(code(wc([wait(100, 1)])) == 'queued-ahead', "105a: a non-CI run queued behind a non-CI one waits its turn (the base case)")
+check(wc([wait(100, 1)], 1, True) is None, "105a: a CI run goes ahead of a queued non-CI run")
+check(wc([run(8), wait(700)], 1, True) is None, "105a: a CI run is not held by the reservation for a non-CI head")
+check(code(wc([run(8), wait(700)], 1, False)) == 'reserved', "105a: the same head still holds a non-CI run (the base case)")
+r = wc([run(20)], 1, True)
+check(code(r) == 'ci-priority' and r[1].startswith('ci priority: cpus:'), "105a: a CI run held for cpus says ci priority and the usual reason")
+check(wc([run(1, ci=True)], 1, True) is None, "105a: a CI run starts beside a running CI run while cpus are free (CI runs among themselves share the cap)")
+r = wc([wait(5, 1, ci=True, pid=4244)], 1, True)
+check(code(r) == 'ci-priority' and 'queued ahead' in r[1], "105a: a CI run keeps turn order behind an earlier CI run of its size (ci priority, queued ahead)")
+import subprocess, signal
+sp = subprocess.Popen(['sleep', '60']); time.sleep(0.2); os.kill(sp.pid, signal.SIGSTOP); time.sleep(0.3)
+check(code(wc([run(1, ci=True, pid=sp.pid)])) == 'ci-first', "105a: a CI run stopped by the load pause still holds back a non-CI run")
+os.kill(sp.pid, signal.SIGCONT); sp.kill(); sp.wait()
+check(m.requeue_due({'kind': 'light'}, 1, 1e6, 301.0) and not m.requeue_due({'kind': 'light', 'ci': True}, 1, 1e6, 301.0), "105a: a CI run is never requeued (the restart would lose --ci); the same plain run is")
+check('ci-first' in getattr(m, 'WAIT_CODES', ()) and 'ci-priority' in getattr(m, 'WAIT_CODES', ()), "105a: WAIT_CODES lists both new codes")
+PY
+TESTSLOT_CAP=20 TESTSLOT_LOAD_CAP=10 python3 "$P" "$T" > "$O/tsci.txt" 2>"$O/tsci.err"
+[ -s "$O/tsci.txt" ] || { fail "105a: the unit checks did not run"; sed 's/^/     /' "$O/tsci.err"; }
+while read -r verdict rest; do [ "$verdict" = PASS ] && ok "$rest" || fail "$rest"; done < "$O/tsci.txt"
+
+# 105b. --ci is for the users in ci-users, by the account's real name: no file, an environment variable and a USER override do not grant it
+me_user=$(id -un); cif=$TESTSLOT_DIR/ci-users; rm -f "$cif"
+"$T" run --ci --cpus 1 -- true >"$O/ci1.out" 2>"$O/ci1.err"; c=$?
+[ "$c" != 0 ] && grep -q "$cif" "$O/ci1.err" && ok "105b: --ci with no ci-users file is refused and names the file" || fail "105b: exit $c, stderr: $(head -c 200 "$O/ci1.err")"
+TESTSLOT_CI_USERS=$me_user "$T" run --ci --cpus 1 -- true >/dev/null 2>"$O/ci2.err"; c=$?
+[ "$c" != 0 ] && grep -q "$cif" "$O/ci2.err" && ok "105b: TESTSLOT_CI_USERS does not grant --ci (the caller sets its own environment)" || fail "105b: TESTSLOT_CI_USERS granted --ci"
+echo zzciuser > "$cif"
+USER=zzciuser LOGNAME=zzciuser "$T" run --ci --cpus 1 -- true >/dev/null 2>"$O/ci3.err"; c=$?
+[ "$c" != 0 ] && grep -q "$cif" "$O/ci3.err" && ok "105b: USER and LOGNAME set to a listed name do not grant --ci (the real account is checked)" || fail "105b: exit $c with USER set to a listed name: $(head -c 200 "$O/ci3.err")"
+"$T" run --ci --cpus 1 -- true >/dev/null 2>"$O/ci4.err"; c=$?
+[ "$c" != 0 ] && grep -q "$cif" "$O/ci4.err" && ok "105b: a user not in the file is refused, naming the file" || fail "105b: an unlisted user ran --ci"
+printf '# %s\n   # %s\n\n' "$me_user" "$me_user" > "$cif"
+"$T" run --ci --cpus 1 -- true >/dev/null 2>"$O/ci4b.err"; c=$?
+[ "$c" != 0 ] && grep -q "$cif" "$O/ci4b.err" && ok "105b: a user named only in a # comment line is refused" || fail "105b: a commented-out name granted --ci"
+printf '# the CI accounts\n\n%s\n' "$me_user" > "$cif"
+"$T" run --ci --cpus 1 -- true >/dev/null 2>"$O/ci5.err"; c=$?
+[ "$c" = 0 ] && ok "105b: a user in the file (comments and blank lines ignored) runs with --ci" || fail "105b: a listed user was refused, exit $c: $(head -c 200 "$O/ci5.err")"
+"$T" run --ci --track -- true >/dev/null 2>"$O/ci6.err"; c=$?
+[ "$c" != 0 ] && ok "105b: --ci with --track is refused (a track run takes no slot)" || fail "105b: --ci --track ran"
+
+# 105c. the order: a holder with the whole cap, a non-CI run queued, then a --ci run queued behind it. When cpus free the CI run starts
+# first, the non-CI run (and a later one) wait until it ends, and status says which is which.
+rm -f "$O"/ci-*; export TESTSLOT_SAMPLE_S=0.5
+now() { python3 -c "import time; print(time.time())"; }
+"$T" run --cpus 2 -- bash -c ": cih.$$; sleep 14" >/dev/null 2>&1 & ciH=$!
+until_long '[ -n "$(rpg "cih.$$")" ]' || fail "105c: the holder never showed as running"
+"$T" run --cpus 1 -- bash -c ": cin1.$$; python3 -c 'import time; print(time.time())' > $O/ci-n1s; sleep 2; python3 -c 'import time; print(time.time())' > $O/ci-n1e" >/dev/null 2>&1 & ciN1=$!
+until_long '"$T" status --json | python3 -c "import json,sys; sys.exit(not any(\"cin1.$$\" in (w.get(\"command\") or \"\") for w in json.load(sys.stdin)[\"waiting\"]))"' || fail "105c: the non-CI run never showed as waiting"
+"$T" run --ci --cpus 1 -- bash -c ": cici.$$; python3 -c 'import time; print(time.time())' > $O/ci-cs; sleep 4; python3 -c 'import time; print(time.time())' > $O/ci-ce" >/dev/null 2>"$O/ci7.err" & ciC=$!
+sleep 3
+"$T" run --cpus 1 -- bash -c ": cin2.$$; python3 -c 'import time; print(time.time())' > $O/ci-n2s" >/dev/null 2>&1 & ciN2=$!
+sleep 2
+"$T" status > "$O/cistat.txt"; "$T" status --json > "$O/cistat.json"
+python3 - "$O/cistat.json" "$O/ci7.err" > "$O/cijson.txt" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+w = {(j.get("command") or ""): j for j in d["waiting"]}
+def find(tag):
+    return next((j for c, j in w.items() if tag in c), None)
+n1, ci, n2 = find("cin1."), find("cici."), find("cin2.")
+print("PASS" if n1 and n1.get("wait_reason") == "ci-first" and n1.get("ci") is False else "FAIL", "105c: the earlier non-CI run waits with code ci-first and ci false in status --json (" + str(n1 and (n1.get("wait_reason"), n1.get("ci"))) + ")")
+print("PASS" if n2 and n2.get("wait_reason") == "ci-first" else "FAIL", "105c: a non-CI run queued after the CI run waits ci-first too")
+print("PASS" if ci and ci.get("ci") is True and (ci.get("wait_reason") or "").startswith("ci-priority") else "FAIL", "105c: the waiting CI run has ci true and the code ci-priority (" + str(ci and (ci.get("wait_reason"), ci.get("ci"))) + ")")
+PY
+while read -r verdict rest; do [ "$verdict" = PASS ] && ok "$rest" || fail "$rest"; done < "$O/cijson.txt"
+grep -q "cin1\.$$" "$O/cistat.txt" && grep -q "(waiting: ci first)" "$O/cistat.txt" && ok "105c: status prints (waiting: ci first) on a held run" || fail "105c: status has no '(waiting: ci first)': $(grep -n 'waiting:' "$O/cistat.txt" | head -3)"
+grep -q "(ci, priority)" "$O/cistat.txt" && ok "105c: status prints (ci, priority) on the CI run" || fail "105c: status has no '(ci, priority)'"
+grep "(ci, priority)" "$O/cistat.txt" | grep -q "(waiting: ci priority: cpus: " && ok "105c: the waiting CI row also says what holds it (waiting: ci priority: cpus: ...)" || fail "105c: the CI row has no reason: $(grep -n 'ci, priority' "$O/cistat.txt" | head -2)"
+python3 - "$O/cistat.json" <<'PY' && ok "105c: --json carries the CI run's wait_text (ci priority: cpus: ...)" || fail "105c: the CI run's wait_text is wrong in --json"
+import json, sys
+d = json.load(open(sys.argv[1]))
+ci = next(j for j in d["waiting"] if "cici." in (j.get("command") or ""))
+sys.exit(0 if (ci.get("wait_text") or "").startswith("ci priority: cpus: ") else 1)
+PY
+bwaitp "$ciH"
+until_long '[ -s "$O/ci-cs" ]' && ok "105c: when the cpus free, the CI run starts" || fail "105c: the CI run never started"
+sleep 2
+[ ! -e "$O/ci-n1s" ] && [ ! -e "$O/ci-n2s" ] && ok "105c: no non-CI run starts while the CI run runs, though a cpu is free" || fail "105c: a non-CI run started during the CI run (n1 $(cat "$O/ci-n1s" 2>/dev/null), n2 $(cat "$O/ci-n2s" 2>/dev/null))"
+bwaitp "$ciC"
+until_long '[ -s "$O/ci-n1s" ] && [ -s "$O/ci-ce" ]' || fail "105c: the non-CI run never started after the CI run ended"
+num "$(cat "$O/ci-n1s" 2>/dev/null)" ">" "$(cat "$O/ci-ce" 2>/dev/null)" && ok "105c: the non-CI run, queued first, starts only after the CI run ended" || fail "105c: n1 started at $(cat "$O/ci-n1s" 2>/dev/null), the CI run ended at $(cat "$O/ci-ce" 2>/dev/null)"
+bwaitp "$ciN1"; bwaitp "$ciN2"
+
+# 105d. a CI run's reason in status follows what it waits on: behind an earlier CI run first (queued ahead), then for cpus once that one runs
+"$T" run --cpus 2 -- bash -c ": cdh.$$; sleep 10" >/dev/null 2>&1 & cdH=$!
+until_long '[ -n "$(rpg "cdh.$$")" ]' || fail "105d: the holder never showed as running"
+"$T" run --ci --cpus 2 -- bash -c ": cdc1.$$; sleep 5" >/dev/null 2>&1 & cdC1=$!
+until_long '"$T" status --json | python3 -c "import json,sys; sys.exit(not any(\"cdc1.$$\" in (w.get(\"command\") or \"\") for w in json.load(sys.stdin)[\"waiting\"]))"' || fail "105d: the first CI run never showed as waiting"
+"$T" run --ci --cpus 1 -- bash -c ": cdc2.$$; sleep 1" >/dev/null 2>&1 & cdC2=$!
+cdtext() { "$T" status --json | python3 -c "import json,sys; print(next((w.get('wait_text') or '' for w in json.load(sys.stdin)['waiting'] if 'cdc2.$$' in (w.get('command') or '')), ''))"; }
+until_long '[ -n "$(cdtext)" ]' || fail "105d: the second CI run never showed as waiting"
+case "$(cdtext)" in "ci priority: "*"ahead"*) ok "105d: a CI run behind an earlier CI run says the run ahead holds it";; *) fail "105d: wait_text is '$(cdtext)'";; esac
+until_long 'case "$(cdtext)" in "ci priority: cpus: "*) true;; *) false;; esac' && ok "105d: the text is rewritten to the cpus hold once the earlier CI run runs" || fail "105d: wait_text stayed '$(cdtext)'"
+bwaitp "$cdH"; bwaitp "$cdC1"; bwaitp "$cdC2"
+rm -f "$cif" "$O"/ci-*; unset TESTSLOT_SAMPLE_S
 
 echo "$fails failed"
 exit $((fails > 0))

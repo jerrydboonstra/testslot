@@ -47,7 +47,7 @@ def reserving(waiting, now=None):
 # The stable code of each reason a waiting run can be held for, recorded as its wait_reason. The text of a reason
 # carries live numbers (elapsed time, load); the code never does, so it changes only when the reason does. Every
 # reason goes through wait_why, which refuses a code not listed here.
-WAIT_CODES = ("reserved", "queued-ahead", "cpus", "load", "gate", "no-limit")
+WAIT_CODES = ("reserved", "queued-ahead", "cpus", "load", "gate", "no-limit", "ci-first", "ci-priority")
 
 
 def wait_why(code, text):
@@ -63,48 +63,63 @@ def why_wait(hs, me, mine, cpus, limit_s=None):
     return held[1] if held else None
 
 
-def wait_check(hs, me, mine, cpus, limit_s=None):
+def wait_check(hs, me, mine, cpus, limit_s=None, ci=False):
     """(code, reason text) for why a run queued at `mine` asking for `cpus` can't start now, or None if it can.
     A run that would start past a waiting run (a head) needs a time limit within the backfill limit, and against a reserved head
-    that limit must end within the backfill limit of the moment the head began to reserve."""
-    # both caps are read on every check, not once at start: a cap raised or lowered while runs wait reaches them
-    cap, load_cap = config.read_cap(), config.read_load_cap()
-    ahead = waiters_ahead(hs, me, mine)
-    backfill_s = config.read_backfill_limit() * 60
-    head = reserving(ahead)
-    if head:
-        held = wait_why("reserved", f"cpus are reserved for the run at the head (pgid {head.get('pgid') or '-'}, {state.cpus_of(head)} cpus, "
-                        f"waiting {util.fmt_elapsed(head['queued'])}); nothing passes it")
-        if limit_s is None:
-            return held
-        # the earliest moment a head began to reserve: the run's limit must end by then plus the backfill limit
-        now, load = time.time(), config.loadavg()[0]
-        moments = [m for m in (reserve_moment(h, load, load_cap) for h in ahead) if m is not None and m < now]
-        if not moments or now + limit_s > min(moments) + backfill_s:
-            return held
-    # backfill: only a run asking for more cpus than this one is passed over; a run of this size or smaller goes first
-    first = [h for h in ahead if state.cpus_of(h) <= cpus]
-    if first:
-        return wait_why("queued-ahead", f"{len(first)} run(s) queued ahead of this one")
-    if ahead and (limit_s is None or limit_s > backfill_s):
-        h = ahead[0]
-        why = "no time limit (--max-minutes)" if limit_s is None else f"a time limit over the backfill limit of {backfill_s / 60:g} minutes"
-        return wait_why("no-limit", f"{why}: the run ahead (pid {h.get('pid')}, {state.cpus_of(h)} cpus) is still waiting")
-    used = sum(state.charged_cpus(h) for h in hs if state.holds_cpus(h) and h["pid"] != me)
-    if used + cpus > cap:
-        return wait_why("cpus", f"cpus: {used:g} of {cap} in use, this run needs {cpus}")
-    # debt: the 1-minute load lags. Just after a run ends it still counts that run for some seconds,
-    # so the next start can wait until it falls under the cap; just after a start it doesn't count it
-    # yet, which the charge check above covers. Upgrade: subtract the running runs' share, or
-    # read /proc/stat. Ceiling: outside work that keeps the load at the cap holds every run, by design
-    # (the agreed gate); the first run is checked against the load alone, not load plus its cpus, or a
-    # --heavy run could start only on an idle box.
-    load = config.loadavg()[0]
-    if load >= load_cap:  # always, so outside work holds back even the first run
-        return wait_why("load", f"load: {load:.1f} now, at or over the load cap {load_cap:g}")
-    if used and over_load_cap(cpus, load, load_cap):
-        return wait_why("load", f"load: {load:.1f} now, this run needs {cpus}, load cap {load_cap:g}")
-    return None
+    that limit must end within the backfill limit of the moment the head began to reserve.
+    The CI hold: a non-CI run waits (ci-first) while any other CI run on the host is waiting or holding a slot; a CI run (`ci`) goes ahead of
+    every queued non-CI run, and anything that holds it back comes with the code ci-priority and the usual reason after it."""
+    if not ci:
+        for h in hs:
+            if h.get("ci") and h["pid"] != me and h.get("state") in ("waiting", "admitted", "running") and not h.get("orphan"):
+                return wait_why("ci-first", f"ci first: a CI run (pid {h['pid']}) is queued or running on this host, and no new run starts until it has ended")
+
+    def check():
+        # both caps are read on every check, not once at start: a cap raised or lowered while runs wait reaches them
+        cap, load_cap = config.read_cap(), config.read_load_cap()
+        ahead = waiters_ahead(hs, me, mine)
+        if ci:  # a CI run goes ahead of every queued non-CI run: only CI runs queued before it are ahead of it
+            ahead = [h for h in ahead if h.get("ci")]
+        backfill_s = config.read_backfill_limit() * 60
+        head = reserving(ahead)
+        if head:
+            held = wait_why("reserved", f"cpus are reserved for the run at the head (pgid {head.get('pgid') or '-'}, {state.cpus_of(head)} cpus, "
+                            f"waiting {util.fmt_elapsed(head['queued'])}); nothing passes it")
+            if limit_s is None:
+                return held
+            # the earliest moment a head began to reserve: the run's limit must end by then plus the backfill limit
+            now, load = time.time(), config.loadavg()[0]
+            moments = [m for m in (reserve_moment(h, load, load_cap) for h in ahead) if m is not None and m < now]
+            if not moments or now + limit_s > min(moments) + backfill_s:
+                return held
+        # backfill: only a run asking for more cpus than this one is passed over; a run of this size or smaller goes first
+        first = [h for h in ahead if state.cpus_of(h) <= cpus]
+        if first:
+            return wait_why("queued-ahead", f"{len(first)} run(s) queued ahead of this one")
+        if ahead and (limit_s is None or limit_s > backfill_s):
+            h = ahead[0]
+            why = "no time limit (--max-minutes)" if limit_s is None else f"a time limit over the backfill limit of {backfill_s / 60:g} minutes"
+            return wait_why("no-limit", f"{why}: the run ahead (pid {h.get('pid')}, {state.cpus_of(h)} cpus) is still waiting")
+        used = sum(state.charged_cpus(h) for h in hs if state.holds_cpus(h) and h["pid"] != me)
+        if used + cpus > cap:
+            return wait_why("cpus", f"cpus: {used:g} of {cap} in use, this run needs {cpus}")
+        # debt: the 1-minute load lags. Just after a run ends it still counts that run for some seconds,
+        # so the next start can wait until it falls under the cap; just after a start it doesn't count it
+        # yet, which the charge check above covers. Upgrade: subtract the running runs' share, or
+        # read /proc/stat. Ceiling: outside work that keeps the load at the cap holds every run, by design
+        # (the agreed gate); the first run is checked against the load alone, not load plus its cpus, or a
+        # --heavy run could start only on an idle box.
+        load = config.loadavg()[0]
+        if load >= load_cap:  # always, so outside work holds back even the first run
+            return wait_why("load", f"load: {load:.1f} now, at or over the load cap {load_cap:g}")
+        if used and over_load_cap(cpus, load, load_cap):
+            return wait_why("load", f"load: {load:.1f} now, this run needs {cpus}, load cap {load_cap:g}")
+        return None
+
+    held = check()
+    if ci and held:  # the code says a CI run is held; its text says what by (cpus, load, a CI run ahead of it, the reservation)
+        return wait_why("ci-priority", f"ci priority: {held[1]}")
+    return held
 
 
 TTY_STOPS = {signal.SIGTSTP, signal.SIGTTIN, signal.SIGTTOU}
@@ -149,7 +164,7 @@ def take_slots(rec, holder_path, heavy):
             state.write_holder(holder_path, rec)
         while True:
             with turnstile_held(turn):
-                held = wait_check(state.read_holders(), me, rec["queued"], state.cpus_of(rec), rec.get("limit_s"))
+                held = wait_check(state.read_holders(), me, rec["queued"], state.cpus_of(rec), rec.get("limit_s"), bool(rec.get("ci")))
                 reason = held[1] if held else None
                 if held is None:
                     try:  # the old gate: a run outside testslot (test-parallel's LOCK_EX) holds it
@@ -168,8 +183,11 @@ def take_slots(rec, holder_path, heavy):
                     state.write_holder(holder_path, admitted)
                     rec.update(admitted)
                     return [gate], said is not None
-                if held[0] != code:  # codes, not text: the text carries live numbers and changes every second
+                kind = re.sub(r"\([^)]*\)|[\d.:]+", "", held[1]) if rec.get("ci") else ""  # what a CI run waits on (cpus, load, queued ahead): the text without its numbers
+                if held[0] != code or (rec.get("ci") and kind != rec.get("wait_kind")):  # codes, not text: the text carries live numbers and changes every second
                     code = rec["wait_reason"] = held[0]
+                    if rec.get("ci"):  # a CI run's code is ci-priority (gate aside): status shows what it waits on, rewritten when that changes
+                        rec["wait_text"], rec["wait_kind"] = held[1], kind
                     state.write_holder(holder_path, rec)
             if reason != said:
                 head = "waiting" if said is None else "still waiting"

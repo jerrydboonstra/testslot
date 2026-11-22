@@ -117,9 +117,9 @@ def requeue_size(peak):
 def requeue_due(rec, others_going, load, since_pause):
     """Whether this run is to be stopped and started again: a light run still reading over REQUEUE_X times its declared cpus
     that was first paused by the load pause since_pause seconds ago (None: it has not been paused since it went over, or it
-    is not over), with the load over the trigger and another run going. Never a heavy, track or already requeued run, and
+    is not over), with the load over the trigger and another run going. Never a heavy, track, CI or already requeued run (a requeue would start it again without --ci), and
     never one with no usable reading (it is not over then)."""
-    return (rec.get("kind") == "light" and not rec.get("requeued_from") and others_going >= 1 and since_pause is not None
+    return (rec.get("kind") == "light" and not rec.get("ci") and not rec.get("requeued_from") and others_going >= 1 and since_pause is not None
             and since_pause >= config.REQUEUE_AFTER_S and load > config.LOAD_TRIGGER_X * config.CORES)
 
 

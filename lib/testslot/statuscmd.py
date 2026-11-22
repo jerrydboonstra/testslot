@@ -20,6 +20,7 @@ def job(h, now):
             "queued": h.get("queued"), "started": started,
             "wait_s": round((started or now) - h["queued"], 1) if h.get("queued") else None,
             "run_s": round(now - started, 1) if started else None,
+            "ci": bool(h.get("ci")), "wait_text": h.get("wait_text") if h.get("ci") and h.get("state") == "waiting" and isinstance(h.get("wait_text"), str) else "",
             "orphan": bool(h.get("orphan")), "backfill": bool(h.get("backfill")), "log": h.get("log"),
             "wait_reason": h.get("wait_reason") if h.get("state") == "waiting" and isinstance(h.get("wait_reason"), str) else "",
             "paused": bool(h.get("paused_since") or h.get("load_paused_since")),
@@ -106,8 +107,11 @@ def cmd_status(argv):
                 pos += "  (started by backfill)"
             if j.get("limit_s"):
                 pos += f"  (limit {util.fmt_limit(j['limit_s'])}" + (f", {max(j['limit_left_s'], 0):.0f}s left)" if j.get("limit_left_s") is not None else ")")
+            if j.get("ci"):
+                pos += "  (ci, priority)"
             if j.get("state") == "waiting" and j.get("wait_reason"):
-                pos += f"  (waiting: {j['wait_reason']})"
+                # a held run: "ci first" is the code ci-first said in words; a CI run's code (ci-priority) comes with what holds it
+                pos += f"  (waiting: {j['wait_text'] or j['wait_reason'].replace('ci-first', 'ci first')})"
             if j.get("requeued"):
                 r = j["requeued"]
                 pos += (f"  (requeued once: declared {r.get('declared', 0):g}, peak {r.get('peak', 0):g}, now {r.get('cpus', 0):g}; "

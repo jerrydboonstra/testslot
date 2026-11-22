@@ -64,7 +64,69 @@ def pausing(h):
             return True
     back = h.get("resumed_at")
     return (isinstance(back, (int, float)) and not isinstance(back, bool)
-            and 0 <= time.time() - back <= max(config.SAMPLE_S, 0.5) + config.START_RATE_S)
+            and 0 <= config.now() - back <= max(config.SAMPLE_S, 0.5) + config.START_RATE_S)
+
+
+def window_claim(kind, window, now):
+    """Take the settle window for a load "pause" or "resume": True, and the time recorded, when none of that kind is recorded
+    within `window` seconds before `now` (a record in the future, from a clock that went back, doesn't count); False otherwise.
+    The read-check-write is under an exclusive flock on $DIR/pause.lock, one file for every wrapper of the host, and the
+    times live in $DIR/pause-window-state. Never called with a wrapper's own lock held, so no lock order arises."""
+    fd = os.open(os.path.join(config.DIR, "pause.lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o664)
+    try:
+        own_mode(fd, 0o664)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        path = os.path.join(config.DIR, "pause-window-state")
+        try:
+            with open(path, encoding="utf-8") as f:
+                last = json.load(f)
+        except (OSError, ValueError):
+            last = {}
+        if not isinstance(last, dict):
+            last = {}
+        at = last.get(kind)
+        if isinstance(at, (int, float)) and not isinstance(at, bool) and 0 <= now - at < window:
+            return False
+        last[kind] = now
+        tmp = f"{path}.{os.getpid()}.{time.time_ns()}.tmp"
+        wfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o664)
+        try:
+            os.fchmod(wfd, 0o664)
+            with os.fdopen(wfd, "w", encoding="utf-8") as f:
+                json.dump(last, f)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return True
+    finally:
+        os.close(fd)
+
+
+def window_claim_safe(kind, window, now):
+    """window_claim, but a folder that can't be written (another account's pause.lock, a full disk) never kills the throttle
+    thread: a pause is then not taken (the run keeps going) and a resume is (a run is never left stopped for a broken lock)."""
+    try:
+        return window_claim(kind, window, now)
+    except OSError:
+        return kind == "resume"
+
+
+def newest_paused(hs):
+    """The holder whose load pause is the newest, or None: orphans are skipped (read_holders keeps those whose command still
+    runs, and their wrapper is gone, so none of them would resume), and a tie goes to the higher pid."""
+    best = None
+    for h in hs:
+        at = h.get("load_paused_since")
+        if h.get("orphan") or isinstance(at, bool) or not isinstance(at, (int, float)):
+            continue
+        key = (at, h.get("pid") or 0)
+        if best is None or key > best[0]:
+            best = (key, h)
+    return best[1] if best else None
 
 
 def record_shrink_after(h):
@@ -186,7 +248,7 @@ def own_mode(fd, mode):
 def history_line(h, ended, code):
     """The history record for a finished run: plain fields, so another backend could write the same."""
     started = h.get("since")
-    return {"pid": h.get("pid"), "pgid": h.get("pgid"), "account": h.get("account"), "repo": h.get("repo"),
+    line = {"pid": h.get("pid"), "pgid": h.get("pgid"), "account": h.get("account"), "repo": h.get("repo"),
             "command": (h.get("command") or "")[:500], "kind": h.get("kind"), "cpus": cpus_of(h),
             "queued": h.get("queued"), "started": started, "ended": ended, "exit": code,
             "wait_s": round(started - h["queued"], 3) if started and h.get("queued") else None,
@@ -201,6 +263,9 @@ def history_line(h, ended, code):
             "max_pause_s": round(h.get("max_pause_s") or 0, 2),
             "key": h.get("key"), "peak": h.get("peak") if isinstance(h.get("peak"), (int, float)) else None,
             "cpu_s": h.get("cpu_s") if isinstance(h.get("cpu_s"), (int, float)) and not isinstance(h.get("cpu_s"), bool) else None}
+    if isinstance(h.get("error"), str) and h["error"]:  # testslot's own error text, only when it had one (see util.ERROR)
+        line["error"] = h["error"][:500]  # cut like command: prune writes lines from any account's holder file, and a line must stay small
+    return line
 
 
 def append_history(rec):

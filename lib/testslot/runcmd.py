@@ -19,6 +19,7 @@ from testslot import util
 
 def cmd_run(argv):
     heavy, track, log, cpus, key = False, False, None, None, None
+    ci = False  # --ci: a CI run, for the users in ci-users
     requeued = None  # internal: (declared, peak) of the run this one replaces, set by the wrapper that requeued it
     limit_s = None  # --max-minutes, in seconds
     while argv and argv[0] != "--":
@@ -33,6 +34,8 @@ def cmd_run(argv):
             heavy = True
         elif a == "--track":
             track = True
+        elif a == "--ci":
+            ci = True
         elif a == "--log" and argv:
             log = argv.pop(0)
         elif a == "--key" and argv:
@@ -53,9 +56,16 @@ def cmd_run(argv):
         else:
             util.die(f"run: unknown option {a}")
     if not argv or argv[0] != "--" or len(argv) < 2:
-        util.die("usage: testslot run [--cpus N | --heavy | --track] [--max-minutes N] [--key KEY] [--log FILE] -- <command...>")
+        util.die("usage: testslot run [--cpus N | --heavy | --track] [--ci] [--max-minutes N] [--key KEY] [--log FILE] -- <command...>")
     if heavy + track + (cpus is not None) > 1:
         util.die("run: --cpus, --heavy and --track exclude each other")
+    if ci:
+        if track:
+            util.die("run: --ci and --track exclude each other (a track run takes no slot, so there is nothing to put first)")
+        who = config.real_user()
+        if who not in config.read_ci_users():
+            util.die(f"run: --ci is for the users listed in {config.CI_USERS} (one account name a line); {who} is not one"
+                     + ("" if os.path.exists(config.CI_USERS) else " (the file does not exist)"))
     command = argv[1:]
     kind = "heavy" if heavy else "track" if track else "light"
     if cpus and cpus > config.read_cap():
@@ -89,6 +99,8 @@ def cmd_run(argv):
     state.MY_QUEUED = time.time()
     rec = {"pid": pid, "account": me, "repo": state.repo_dir(), "command": " ".join(command), "kind": kind, "limit_s": limit_s,
            "cpus": cpus, "key": admission.store_key(key) if key else admission.derive_key(command), "start": (procs.proc_stat(pid) or (None, None))[1], "state": "waiting", "queued": state.MY_QUEUED, "since": None, "pgid": None, "log": log}
+    if ci:
+        rec["ci"] = True  # set only here, after the ci-users check: the hold in admission.wait_check reads it
     if requeued:  # started again by its own wrapper: at the head of the queue, once, with its measured size
         rec.update(requeued_from={"declared": requeued[0], "peak": requeued[1], "cpus": cpus}, head=True)
     proc = None
@@ -239,6 +251,8 @@ def cmd_run(argv):
                 f"(`id -nG`; a new group needs a fresh login)", 1)
         if waited:
             print("testslot: slot free, starting", file=sys.stderr, flush=True)
+        if os.environ.get("TESTSLOT_TEST_CRASH") == "after-admit":  # tests only: an internal error after admission, before the command
+            raise RuntimeError("after admission, before the command")
         env = dict(os.environ, TESTSLOT_LOG=log)
         if not track:
             # A light run marks the slot held too, so a test-parallel inside it runs rather than waiting
@@ -376,25 +390,50 @@ def cmd_run(argv):
     except SystemExit as e:
         result = e.code if isinstance(e.code, int) else 1
         raise
+    except Exception as e:
+        # testslot's own failure past this point: keep its text for the history line the finally writes, and for the stderr line
+        # the handler prints (the same text). Not PsFailed ("nothing was started": its calls come before admission) and not
+        # BrokenPipeError (the reader left): the handler does not print either one as "testslot error".
+        if not isinstance(e, (procs.PsFailed, BrokenPipeError)):
+            util.ERROR[0] = util.error_text(e)
+        raise
     finally:
         # however we leave (an exception included), end the sampler first (it must not write the record back
         # after we remove it), then the command's group before the slot frees
-        sampling.stop_sampler(sampler)
-        if proc is not None and (rec.get("paused_since") or rec.get("load_paused_since")):  # the throttle didn't end in time: never leave the group stopped
-            try:
-                os.killpg(proc.pid, signal.SIGCONT)
-            except OSError:
-                pass
-            cgroup.signal_scope(scope, signal.SIGCONT)
-        if proc is not None and run_alive(proc.pid):
-            # once already tried (TERM, 5s, KILL) only a last KILL: a group stuck in the kernel costs no second wait
-            kill_group(proc.pid) if ended else end_group(proc.pid)
+        cleanup_error = None
+        outlived = True  # until it is known the group is gone: a run whose cleanup failed keeps its record, for prune to write
+        try:
+            sampling.stop_sampler(sampler)
+            if proc is not None and (rec.get("paused_since") or rec.get("load_paused_since")):  # the throttle didn't end in time: never leave the group stopped
+                try:
+                    os.killpg(proc.pid, signal.SIGCONT)
+                except OSError:
+                    pass
+                cgroup.signal_scope(scope, signal.SIGCONT)
+            if proc is not None and run_alive(proc.pid):
+                # once already tried (TERM, 5s, KILL) only a last KILL: a group stuck in the kernel costs no second wait
+                kill_group(proc.pid) if ended else end_group(proc.pid)
+            if rec.get("since") and os.environ.get("TESTSLOT_TEST_CRASH") == "in-cleanup":  # tests only: an internal error in the cleanup
+                raise RuntimeError("in the cleanup")
+            outlived = proc is not None and run_alive(proc.pid)
+        except Exception as e:
+            # a failure in the cleanup is recorded like any other (the handler prints it, too): the record is written or kept
+            # below, and the error is raised again once that is done
+            cleanup_error = e
+            if not isinstance(e, (procs.PsFailed, BrokenPipeError)) and not util.ERROR[0]:
+                util.ERROR[0] = util.error_text(e)
         # a group that outlives even SIGKILL (stuck in the kernel) keeps its record, so status lists it
         # as running without a slot; prune drops the record once the group is gone
         if rec.get("since"):  # admitted: what happened goes into history, now or when prune finds it
-            rec.update(ended=time.time(), exit=result if result is not None else 128 + cancelled[0] if cancelled else None,
-                       cancelled=bool(cancelled))
-        if proc is None or not run_alive(proc.pid):
+            # the command's code when testslot broke after the command ended (result is still None then; RAN[0] has it), else null
+            # for a run that never reached the command; testslot's own error goes in the record, so a line prune writes later has it too
+            rec.update(ended=time.time(), cancelled=bool(cancelled),
+                       exit=result if result is not None else util.RAN[0] if util.RAN[0] is not None else 128 + cancelled[0] if cancelled else None)
+            if util.ERROR[0]:
+                rec["error"] = util.ERROR[0]
+        if rec.get("since") and os.environ.get("TESTSLOT_TEST_KEEP_HOLDER"):  # tests only: take the group-outlived-SIGKILL path
+            outlived = True
+        if not outlived:
             try:
                 os.unlink(holder_path)
                 if rec.get("since"):
@@ -408,6 +447,8 @@ def cmd_run(argv):
                 pass
         if requeue and cancelled and not stopped and rec.get("since") and proc is not None and not run_alive(proc.pid):
             exec_requeue(rec, command, log)
+        if cleanup_error is not None:
+            raise cleanup_error
 
 
 def exec_requeue(rec, command, log):

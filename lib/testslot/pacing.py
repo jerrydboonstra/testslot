@@ -135,7 +135,7 @@ def start_throttle(rec, holder_path, pgid, lock, scope, is_cancelled, stop, ask_
             paused_at = None
             with lock:
                 rec["paused_since"] = None
-                rec["resumed_at"] = time.time()
+                rec["resumed_at"] = config.now()
                 rec["paused_s"] = (rec.get("paused_s") or 0) + took
                 rec["max_pause_s"] = max(rec.get("max_pause_s") or 0, took)
                 write()
@@ -156,11 +156,17 @@ def start_throttle(rec, holder_path, pgid, lock, scope, is_cancelled, stop, ask_
             load = config.loadavg()[0]
             if load_at is not None:
                 if load < config.read_load_cap() or is_cancelled():
+                    # one resume a window across the host, the newest pause first; a cancel is never held (a TERM needs the run going)
+                    if not is_cancelled():
+                        newest = state.newest_paused(state.read_holders())
+                        if (newest is None or newest.get("pid") != os.getpid()
+                                or not state.window_claim_safe("resume", config.read_pause_window(), config.now())):
+                            return
                     took = now - load_at
                     load_at = None
                     with lock:
                         rec["load_paused_since"] = None
-                        rec["resumed_at"] = time.time()
+                        rec["resumed_at"] = config.now()
                         rec["load_paused_s"] = (rec.get("load_paused_s") or 0) + took
                         write()
                     if paused_at is None:  # a start-rate pause still holds it otherwise
@@ -173,13 +179,15 @@ def start_throttle(rec, holder_path, pgid, lock, scope, is_cancelled, stop, ask_
             if target is None or target.get("pid") != os.getpid():
                 return
             seen = state.valid_observed(target)
+            if not state.window_claim_safe("pause", config.read_pause_window(), config.now()):
+                return  # another run was paused for load inside the window: the 1-minute load has not caught up with it yet
             signal_run(signal.SIGSTOP)
             if is_cancelled():
                 signal_run(signal.SIGCONT)
                 return
             load_at = now
             with lock:
-                rec["load_paused_since"] = time.time()
+                rec["load_paused_since"] = config.now()
                 rec["load_pauses"] = (rec.get("load_pauses") or 0) + 1
                 write()
             say(f"paused: load {load:g} on {config.CORES} cores is over {config.LOAD_TRIGGER_X:g} times the cores, and this run uses "
@@ -296,6 +304,7 @@ def start_throttle(rec, holder_path, pgid, lock, scope, is_cancelled, stop, ask_
                 signal_run(signal.SIGCONT)
                 with lock:
                     rec["load_paused_since"] = None
+                    write()  # a stale paused record would make this run the newest paused for good, and no other paused run could resume
             if paused_at is not None:  # however the thread ends, the run is left running
                 signal_run(signal.SIGCONT)
                 with lock:
