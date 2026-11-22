@@ -2,6 +2,24 @@
 
 What changed in each release, newest first.
 
+## 1.2.0 (2026-11-22)
+
+### The gate
+
+- `testslot run --ci` marks a CI run, for the accounts listed in the `ci-users` file in the state folder. While a CI run waits or runs, no new run that is not one starts on the host, and a queued CI run goes ahead of every queued run that is not one; runs already going are never stopped. `status` shows `(ci, priority)` and `(waiting: ci first)`, and `--json` has a `ci` field.
+
+### The history line
+
+- When testslot itself fails after a run was admitted, that run's `history.jsonl` line now has an `error` field with the text of the `testslot error` line, and its `exit` is the command's own code when the command had finished (null when testslot failed before the command started). A line with no `error` field is a run that hit no internal error of testslot's; a command that cannot start (exit 127) is not one.
+
+### The load pause
+
+- When the host's load runs high, testslot now pauses at most one run and resumes at most one run per settle window, the newest pause first, so the lagging 1-minute load can settle between steps. The window is 30 seconds by default, set by `TESTSLOT_PAUSE_WINDOW` or the `pause-window` file in the state folder (5 to 300). A pause that finds `pause.lock` unusable no longer leaves a stale paused record.
+
+### README
+
+- The README badge row reads CI (the first badge, now labelled CI instead of tests), the MIT license, and the latest release.
+
 ## 1.1.0 (2026-11-16)
 
 ### Install

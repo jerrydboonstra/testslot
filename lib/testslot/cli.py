@@ -1,6 +1,6 @@
 """testslot: one machine-wide test gate on a Linux host (and on a Mac), shared by every account and repo.
 
-  testslot run [--cpus N | --heavy | --track] [--max-minutes N] [--key KEY] [--log FILE] -- <command...>
+  testslot run [--cpus N | --heavy | --track] [--ci] [--max-minutes N] [--key KEY] [--log FILE] -- <command...>
   testslot suggest [--default N] (--key KEY | -- <command...>)
   testslot status [--json]
   testslot summary [--since 12h] [--json]
@@ -58,14 +58,23 @@ host rate, for tests.
 Wait reason: a waiting run records why it waits as one code, in its holder, in status (--json and the "(waiting: <code>)" on its
 row) and, once admitted, on its history line as wait_reason: reserved (cpus are reserved for the head), queued-ahead (runs
 queued ahead of it), cpus (the cap is in use), load (the load cap), gate (the test gate is held outside testslot or by a
-heavy run) or no-limit (a run is waiting ahead and this one has no --max-minutes, or one over the backfill limit). It is
+heavy run), no-limit (a run is waiting ahead and this one has no --max-minutes, or one over the backfill limit), ci-first (a CI run is waiting or running on the host; no new run that is not a CI run starts) or ci-priority (a CI run itself waits: its reason follows on its status row). It is
 empty on a run that never waited, and status shows it only while the run waits. A run with a limit shows it on its status
 row as "(limit 2m, 95s left)", and in --json as limit_s and limit_left_s.
 
+CI first: `testslot run --ci [--cpus N | --heavy] -- <command>` marks a CI run, allowed only for the accounts named in $DIR/ci-users (one a line, #
+lines and blank lines ignored; the file only, no variable; checked against the account's real name, not $USER). While a CI run waits or runs, no new
+run that is not one starts on the host (runs already going are never stopped), and a queued CI run goes ahead of every queued run that is not
+one; CI runs among themselves keep the turn order and share the cap. status shows (ci, priority) on a CI row and (waiting: ci first) on a held
+run. The file is a cooperative convention: the shared folder is group-writable, so a group member can replace it.
+
 Load pause: while the 1-minute load is over 1.5 times the cores, the one light run using the most cpus above what it
 declared pauses itself (SIGSTOP to its group and cgroup), and resumes once the load is under the load cap. A heavy or
-tracked run, a run with no reading, and the last run going are never paused. If the load stays over the trigger, the
-next worst over-user pauses at the next second. It prints a line when it pauses and when it resumes, and status shows
+tracked run, a run with no reading, and the last run going are never paused. The 1-minute load lags a pause by tens of
+seconds, so the host pauses at most one run per settle window (30 s; $DIR/pause-window or TESTSLOT_PAUSE_WINDOW, in
+seconds, held to 5..300, the variable first): if the load stays over the trigger, the next worst over-user pauses a window
+after the last. Paused runs resume one per window too, the one paused last first. A stop of a paused run is never held. The
+window's times are in $DIR/pause-window-state, under the lock $DIR/pause.lock. It prints a line when it pauses and when it resumes, and status shows
 it as "paused: load". It is kept apart from the start-rate pause: a run under both is resumed only when both have
 cleared. TESTSLOT_OBSERVED_DIR names a folder with one file per run, named by its process group id, holding that run's
 cpu reading (TESTSLOT_OBSERVED is the fallback), for tests.
@@ -120,10 +129,17 @@ Exit codes: run returns its command's code (128+n if it was killed by signal n, 
 "testslot error: ..." on stderr and exits 70, so a wrapper that reads only the code can tell a broken gate from
 a failed suite. A command may itself exit 70, so the stderr line is the only reliable marker of testslot's own
 failure. Once the command has finished, an internal error after that (in the cleanup) keeps the command's exit code
-and still prints the line. A closed stdout (testslot status | head) ends quietly with 141, not as an error. Everything
+and still prints the line. A run that was admitted and then hit an internal error records it in its history line: an `error` field
+holding the text of the stderr line without its "(line N)" and cut to 500 characters, and `exit` = the command's own code when the
+command had ended (null when testslot failed before the command started); a run with no internal error has no `error` field. A
+command that can't start (127) or a signal before it starts is not an internal error: it keeps its own exit code and has no `error`. A closed stdout (testslot status | head) ends quietly with 141, not as an error. Everything
 printed is written with errors="replace", so a path or command line that isn't UTF-8 shows as "?" and cannot crash a
 listing. Test hooks: TESTSLOT_TEST_CRASH=<text> raises an internal error at start, except after-wait raises it just after
-the command ends, and pipe raises BrokenPipeError (quiet exit 141). TESTSLOT_DEBUG=1 adds the traceback after the
+the command ends, after-admit raises it after admission and before the command starts, in-cleanup raises it in the cleanup
+after the command, and pipe raises BrokenPipeError
+(quiet exit 141). TESTSLOT_TEST_CLOCK=<file> makes the load pause read its time (stamps, the window) from a number in that file.
+TESTSLOT_TEST_KEEP_HOLDER=1 makes an admitted run keep its holder record as if its group outlived SIGKILL,
+so the next prune writes the history line. TESTSLOT_DEBUG=1 adds the traceback after the
 "testslot error" line. status, summary and stop return 0 (stop: 1 if the group survives).
 """
 import os
@@ -155,7 +171,7 @@ def main():
         crash = os.environ.get("TESTSLOT_TEST_CRASH")  # tests only: an internal error, to see the exit code and the stderr line
         if crash == "pipe":
             raise BrokenPipeError()
-        if crash and crash != "after-wait":
+        if crash and crash not in ("after-wait", "after-admit", "in-cleanup"):
             raise RuntimeError(crash)
         return cmds[argv[0]](argv[1:])
     except procs.PsFailed:
@@ -171,7 +187,9 @@ def main():
         pkg = os.path.dirname(os.path.abspath(__file__)) + os.sep
         ours = [f for f in frames if os.path.abspath(f.filename).startswith(pkg)] or frames
         where = f" (line {ours[-1].lineno})" if ours else ""
-        print(f"testslot error: {type(e).__name__}: {e}{where}", file=sys.stderr)
+        if not util.ERROR[0]:  # a run's own error was recorded where it was raised; any other (status, summary, a failure before admission) is made here
+            util.ERROR[0] = util.error_text(e)
+        print(f"testslot error: {util.ERROR[0]}{where}", file=sys.stderr)
         if os.environ.get("TESTSLOT_DEBUG"):
             traceback.print_exc()
         return util.INTERNAL_ERROR if util.RAN[0] is None else util.RAN[0]

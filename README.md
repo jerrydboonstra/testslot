@@ -2,7 +2,7 @@
 
 # testslot
 
-[![tests](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml/badge.svg)](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml/badge.svg)](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![release](https://img.shields.io/github/v/release/jerrydboonstra/testslot)](https://github.com/jerrydboonstra/testslot/releases/latest)
 
 A test gate for a shared machine: many people, agents and CI jobs run their test suites on one host, and each run waits its turn for free cpus. It scales down to one account on one laptop. It is for one host only: testslot does not coordinate several machines.
 
@@ -46,7 +46,7 @@ testslot summary --since 12h            # recent runs from the history file
 testslot suggest --default 2 -- make test   # cpus the last run of this command peaked at
 ```
 
-Declare the cpus your command really uses (for `make`, its `-j`). The default is 1. A run that asks for more cpus than the cap gets the cap, so it still starts on a small host. `status` and `summary` read the state folder: `history.jsonl` there holds one line per finished run, and `suggest` reads each run's peak cpu use from it.
+Declare the cpus your command really uses (for `make`, its `-j`). The default is 1. A run that asks for more cpus than the cap gets the cap, so it still starts on a small host. `status` and `summary` read the state folder: `history.jsonl` there holds one line per finished run, and `suggest` reads each run's peak cpu use from it. If testslot itself fails after a run was admitted, that run's line also has an `error` field with the text of the `testslot error` line on stderr (without its `(line N)`, cut to 500 characters), and its `exit` is the command's own code when the command had finished (null when testslot failed before the command started). A line with no `error` field is a run that hit no internal error of testslot's; a command that cannot start (exit 127) is not one.
 
 ## Sharing across accounts
 
@@ -83,6 +83,8 @@ A run declares its cpus. testslot waits for them and checks the load before it s
 - Smaller runs may start ahead of a bigger one that is waiting (backfill), but a long wait for the bigger one reserves cpus for it, so it cannot starve.
 - A run that would start ahead of a waiting one needs a time limit (`--max-minutes N`, in minutes, above 0), so it cannot hold the queue up for long. Without one it simply waits its turn. A normal run needs no limit. The limit counts from when the run starts. If it passes while the run it started ahead of is still waiting, testslot stops the run with `TERM`; the run does not start again, its history line says `time limit`, and its exit code is 143 (128 plus the signal). A run that started with nothing waiting is never stopped for its limit.
 - A run pauses itself for up to 3 seconds at a time if the host is starting processes faster than a start-rate cap.
+- When the host's load runs high, the run using the most above what it declared pauses itself and resumes when the load is back under the load cap. The 1-minute load lags a pause by tens of seconds, so at most one run is paused, and one resumed (the newest pause first), per settle window: 30 seconds, or the number of seconds in `TESTSLOT_PAUSE_WINDOW`, else in `pause-window` in the state folder, from 5 to 300.
+- A CI run goes first. `testslot run --ci -- <command>` is for the accounts listed in the file `ci-users` in the state folder (one account name a line, `#` lines and blank lines ignored; no file means nobody, and no environment variable stands in for it). While a CI run is waiting or running, no new run that is not a CI run starts on the host; runs already going are never stopped, and a queued CI run goes ahead of every queued run that is not one. CI runs among themselves keep the turn order and share the cap, so several run together while cpus are free. `status` marks a CI run `(ci, priority)` and a held run `(waiting: ci first)`. The file is a plain convention, not a lock: the shared state folder is writable by its group, so a group member can replace `ci-users`; for a hard boundary keep the file root-owned outside that folder.
 - An internal failure prints `testslot error: ...` on stderr and exits `70` if the command has not already finished. The docstring lists the exit codes.
 
 ### Two runs competing

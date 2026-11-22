@@ -1,5 +1,6 @@
 import math
 import os
+import pwd
 import sys
 import time
 
@@ -122,6 +123,26 @@ def read_load_cap():
     return _cached("load-cap", _read_load_cap)
 
 
+CI_USERS = os.path.join(DIR, "ci-users")
+
+
+def real_user():
+    """The account this process runs as, by its uid: never getpass.getuser(), which reads LOGNAME and USER first, so a caller could name
+    itself. A uid with no passwd entry gives its number."""
+    try:
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        return str(os.geteuid())
+
+
+def read_ci_users():
+    """The accounts allowed to start a CI run (`run --ci`): one name a line in $DIR/ci-users, blank lines and # lines ignored. The file
+    only: no environment variable stands in for it, since the caller sets its own environment. No file means nobody."""
+    # debt: a cooperative gate, not a security boundary: the shared folder is group-writable (install-shared, no sticky bit), so a group
+    # member can replace ci-users, as it can a holder record. Upgrade: a root-owned ci-users outside the group-writable folder.
+    return {ln.strip() for ln in (_read(CI_USERS) or "").splitlines() if ln.strip() and not ln.strip().startswith("#")}
+
+
 def read_reserve():
     """Seconds the run at the head of the queue may be passed by smaller runs: $DIR/reserve, else
     TESTSLOT_RESERVE, else 600. Past it, the queue reserves cpus for that run."""
@@ -184,6 +205,40 @@ LOG_DAYS = 14
 # is about 500 bytes on average (a Linux host 497, a Mac 546), up to some 750 with a long key and a long command, so
 # 7,000 to 10,000 runs each, and summary sees a few weeks back.
 HISTORY_MAX = int(os.environ.get("TESTSLOT_HISTORY_MAX", 5 * 1024 * 1024))  # tests set it small
+
+
+# Tests only: TESTSLOT_TEST_CLOCK names a file holding the time (seconds, a number) that the load pause's reads use instead of the
+# wall clock: the pause and resume stamps, pausing(), and the settle window's state. A missing or bad file means the wall clock.
+TEST_CLOCK = os.environ.get("TESTSLOT_TEST_CLOCK", "")
+
+
+def now():
+    """The time the load pause reads: the wall clock, or in tests the number in the TESTSLOT_TEST_CLOCK file."""
+    if TEST_CLOCK:
+        try:
+            t = float((_read(TEST_CLOCK) or "").strip())
+            if math.isfinite(t):
+                return t
+        except ValueError:
+            pass
+    return time.time()
+
+
+# The settle window: the least time between two load pauses, and between two load resumes, across every run on the host.
+# 1-minute load lags a pause by tens of seconds, so about half of that: 30 s unless set, 5 to 300.
+PAUSE_WINDOW_DEFAULT, PAUSE_WINDOW_MIN, PAUSE_WINDOW_MAX = 30.0, 5.0, 300.0
+
+
+def read_pause_window():
+    """Seconds of the settle window: TESTSLOT_PAUSE_WINDOW, else $DIR/pause-window, else 30; a value is held to 5..300 and a
+    bad one falls through to the next source. Read live, so a change reaches every wrapper at its next tick."""
+    for src in (os.environ.get("TESTSLOT_PAUSE_WINDOW"), _read(os.path.join(DIR, "pause-window"))):
+        try:
+            if src and src.strip() and math.isfinite(float(src.strip())):
+                return min(PAUSE_WINDOW_MAX, max(PAUSE_WINDOW_MIN, float(src.strip())))
+        except ValueError:
+            pass
+    return PAUSE_WINDOW_DEFAULT
 
 
 def loadavg():

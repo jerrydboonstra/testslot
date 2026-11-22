@@ -4,7 +4,13 @@ import time
 
 
 RAN = [None]  # the exit code of a command that has finished, so an internal error after it can't replace it
+ERROR = [None]  # testslot's own error text for this run (set where it is raised after admission), for the history line and the stderr line
 INTERNAL_ERROR = 70  # no test runner uses it for a failed suite; see the exit codes in the docstring
+
+
+def error_text(e):
+    """The text after "testslot error: " on stderr, and in the history line's error field: the same, with no line number."""
+    return f"{type(e).__name__}: {e}"
 
 
 def die(msg, code=2):
