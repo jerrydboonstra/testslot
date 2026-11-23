@@ -2,7 +2,7 @@
 
 # testslot
 
-[![CI](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml/badge.svg)](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![release](https://img.shields.io/github/v/release/jerrydboonstra/testslot)](https://github.com/jerrydboonstra/testslot/releases/latest)
+[![CI](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml/badge.svg)](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![release](https://img.shields.io/github/v/release/jerrydboonstra/testslot)](https://github.com/jerrydboonstra/testslot/releases/latest) [![CodeQL](https://github.com/jerrydboonstra/testslot/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/jerrydboonstra/testslot/actions/workflows/github-code-scanning/codeql)
 
 A test gate for a shared machine: many people, agents and CI jobs run their test suites on one host, and each run waits its turn for free cpus. It scales down to one account on one laptop. It is for one host only: testslot does not coordinate several machines.
 

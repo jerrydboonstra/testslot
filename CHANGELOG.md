@@ -2,6 +2,20 @@
 
 What changed in each release, newest first.
 
+## 1.2.1 (2026-11-22)
+
+### README
+
+- The README's badge row now ends with a CodeQL badge, after CI, license and release.
+
+### CI
+
+- testslot's CI workflow now pins the checkout action to a full commit, with its version in a comment, and `test.sh` fails on an unpinned action.
+
+### Security
+
+- `SECURITY.md` now gives the direct link for a private vulnerability report (https://github.com/jerrydboonstra/testslot/security/advisories/new) and says "I aim to reply within 7 days.", with no email address.
+
 ## 1.2.0 (2026-11-22)
 
 ### The gate
