@@ -2346,17 +2346,20 @@ unset TESTSLOT_OBSERVED_DIR TESTSLOT_SAMPLE_S TESTSLOT_FAKE_START_RATE TESTSLOT_
 rm -f "$TESTSLOT_DIR/pause-window" "$TESTSLOT_DIR/pause-window-state" "$TESTSLOT_DIR/pause.lock"
 [ -n "$oldcap" ] && echo "$oldcap" > "$TESTSLOT_DIR/cap" || rm -f "$TESTSLOT_DIR/cap"
 
-# 104. The README's badge row (testslot-badge-ci-label): CI first, labelled CI, then the license, then the release badge; and the
+# 104. The README's badge row (testslot-badge-ci-label, testslot-badges-house-order): CI first, labelled CI, then the license, the release badge, CodeQL last; and the
 # CHANGELOG says so in a 1.2.0 section above 1.1.0. The files sit beside the tool; an installed copy has no README.
 d=$(dirname "$T")
 if [ -f "$d/README.md" ]; then
   row=$(grep -m1 '^\[!\[' "$d/README.md")
-  want='[![CI](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml/badge.svg)](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![release](https://img.shields.io/github/v/release/jerrydboonstra/testslot)](https://github.com/jerrydboonstra/testslot/releases/latest)'
-  [ "$row" = "$want" ] && ok "104a: the README badge row is CI, license, release, in that order" || fail "104a: the README badge row is '$row'"
+  want='[![CI](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml/badge.svg)](https://github.com/jerrydboonstra/testslot/actions/workflows/ci.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![release](https://img.shields.io/github/v/release/jerrydboonstra/testslot)](https://github.com/jerrydboonstra/testslot/releases/latest) [![CodeQL](https://github.com/jerrydboonstra/testslot/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/jerrydboonstra/testslot/actions/workflows/github-code-scanning/codeql)'
+  [ "$row" = "$want" ] && ok "104a: the README badge row is CI, license, release, CodeQL, in that order (no neckbeard badge: testslot is a tool, not a plugin)" || fail "104a: the README badge row is '$row'"
   case $row in "[![CI]("*) ok "104b: the first badge is labelled CI" ;; *) fail "104b: the first badge is not labelled CI: '${row%%]*}'" ;; esac
   u=$(grep -n '^## 1\.2\.0 ' "$d/CHANGELOG.md" | head -1 | cut -d: -f1); r=$(grep -n '^## 1\.1\.0 ' "$d/CHANGELOG.md" | head -1 | cut -d: -f1)
   [ -n "$u" ] && [ -n "$r" ] && [ "$u" -lt "$r" ] && sed -n "${u},${r}p" "$d/CHANGELOG.md" | grep -q 'badge.*CI\|CI.*badge' \
     && ok "104c: the CHANGELOG has a 1.2.0 section above 1.1.0 that says the badge is labelled CI" || fail "104c: no 1.2.0 section above 1.1.0 naming the CI badge (1.2.0 at line '${u:-none}', 1.1.0 at '${r:-none}')"
+  a=$(grep -n '^## 1.2.1' "$d/CHANGELOG.md" | head -1 | cut -d: -f1); b=$(grep -n '^## 1.2.0' "$d/CHANGELOG.md" | head -1 | cut -d: -f1)
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && sed -n "${a},${b}p" "$d/CHANGELOG.md" | awk '/^### README/{f=1;next} /^##/{f=0} f' | grep -q 'CodeQL' \
+    && ok "104e: the 1.2.1 CHANGELOG section has a README line naming the CodeQL badge" || fail "104e: no README line naming CodeQL under 1.2.1 (1.2.1 at line '${a:-none}', 1.2.0 at '${b:-none}')"
   grep -q 'The README shows a tests badge' "$d/CHANGELOG.md" && ok "104d: the shipped 1.1.0 line about the tests badge is left as written" || fail "104d: the shipped 1.1.0 line was edited"
 fi
 
@@ -2477,6 +2480,29 @@ case "$(cdtext)" in "ci priority: "*"ahead"*) ok "105d: a CI run behind an earli
 until_long 'case "$(cdtext)" in "ci priority: cpus: "*) true;; *) false;; esac' && ok "105d: the text is rewritten to the cpus hold once the earlier CI run runs" || fail "105d: wait_text stayed '$(cdtext)'"
 bwaitp "$cdH"; bwaitp "$cdC1"; bwaitp "$cdC2"
 rm -f "$cif" "$O"/ci-*; unset TESTSLOT_SAMPLE_S
+
+# 106. every `uses:` line in testslot's own workflows names a full 40-hex commit sha, with its tag in a "# v" comment (pin-checkout-sha; Scorecard's Pinned-Dependencies)
+wf="$TS_SHIM_DIR/.github/workflows"
+usesre='^[[:space:]]*(-[[:space:]]+)?uses:'
+if [ -d "$wf" ]; then
+  nuses=$(grep -rcE "$usesre" "$wf" | awk -F: '{n += $NF} END {print n + 0}')
+  unpinned=$(grep -rnE "$usesre" "$wf" | grep -vE 'uses:[[:space:]]+([^[:space:]@]+@[0-9a-f]{40}[[:space:]]+# v[0-9]|\./)' || true)   # a local action (./x) has no ref to pin
+  if [ "$nuses" -lt 1 ]; then fail "106: no uses: line found under $wf, so nothing was checked"
+  elif [ -z "$unpinned" ]; then ok "106: every uses: line ($nuses) in the workflows is a 40-hex sha with a # v comment"
+  else fail "106: a uses: line is not pinned to a sha with a # v comment"; echo "$unpinned" | sed 's/^/     /'; fi
+else
+  echo "skip 106 (no .github/workflows folder beside test.sh: a copy of testslot outside the repo, nothing checked)"
+fi
+
+# 107. SECURITY.md says how to report privately: the direct GitHub advisory link, a reply time, and no email address (security-reporting-link; Scorecard's Security-Policy)
+sec="$TS_SHIM_DIR/SECURITY.md"
+if [ -f "$sec" ]; then
+  grep -qF 'https://github.com/jerrydboonstra/testslot/security/advisories/new' "$sec" && ok "107: SECURITY.md links the private advisory form" || fail "107: SECURITY.md lacks the private advisory link"
+  grep -qF 'I aim to reply within 7 days.' "$sec" && ok "107: SECURITY.md states a reply time" || fail "107: SECURITY.md states no reply time"
+  grep -qE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$sec" && fail "107: SECURITY.md publishes an email address" || ok "107: SECURITY.md publishes no email address"
+else
+  ok "107: no SECURITY.md beside test.sh (a copy of testslot outside the repo), nothing to check"
+fi
 
 echo "$fails failed"
 exit $((fails > 0))
